@@ -1,0 +1,103 @@
+# ==========================================
+# DEPENDENCIAS
+# ==========================================
+node_modules/
+.pnp/
+.pnp.js
+
+# ==========================================
+# VARIABLES DE ENTORNO Y SECRETOS
+# ==========================================
+.env
+.env.*
+!.env.example
+!.env.template
+
+# ==========================================
+# ARCHIVOS GENERADOS Y COMPILADOS
+# ==========================================
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+coverage/
+
+# ==========================================
+# CACHÉ
+# ==========================================
+.cache/
+.parcel-cache/
+.vite/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# ==========================================
+# LOGS
+# ==========================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ==========================================
+# SISTEMA OPERATIVO
+# ==========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==========================================
+# EDITORES E IDE
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+
+# ==========================================
+# TESTING
+# ==========================================
+.nyc_output/
+playwright-report/
+test-results/
+cypress/videos/
+cypress/screenshots/
+
+# ==========================================
+# FRAMEWORKS Y HERRAMIENTAS
+# ==========================================
+.vercel/
+.netlify/
+.svelte-kit/
+storybook-static/
+
+# ==========================================
+# ARCHIVOS TEMPORALES
+# ==========================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+
+# ==========================================
+# BASE DE DATOS LOCAL
+# ==========================================
+*.sqlite
+*.sqlite3
+*.db
+
+# ==========================================
+# CERTIFICADOS Y CLAVES PRIVADAS
+# ==========================================
+*.pem
+*.key
+*.p12
+*.pfx

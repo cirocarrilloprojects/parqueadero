@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* Tokens de marca (reemplazan los colores #1a237e repartidos en tus CSS) */
+@theme {
+  --color-brand-600: #1a237e;
+  --color-brand-700: #151b60;
+}
