@@ -1,7 +1,7 @@
 ﻿
 ==========================================
 REPORTE DEL PROYECTO
-Generado: 2026-10-13 05:46:47
+Generado: 2026-10-13 15:09:46
 RaÃ­z: C:\code\parqueadero\parqueadero
 ==========================================
 
@@ -9,6 +9,7 @@ RaÃ­z: C:\code\parqueadero\parqueadero
 ÃRBOL DE DIRECTORIOS
 ==========================================
 
+.gitignore
 codigo.txt
 generar-reporte.ps1
 README.md
@@ -18,6 +19,7 @@ backend\package.json
 backend\database\schema.sql
 backend\scripts\migrar-desde-legacy.js
 backend\scripts\seed.js
+backend\scripts\verificar-esquema.js
 backend\src\app.js
 backend\src\server.js
 backend\src\config\db.js
@@ -29,6 +31,8 @@ backend\src\controllers\tiposVehiculos.controller.js
 backend\src\controllers\vehiculos.controller.js
 backend\src\middlewares\authenticate.js
 backend\src\middlewares\errorHandler.js
+backend\src\middlewares\sameOrigin.js
+backend\src\middlewares\sessionGuard.js
 backend\src\middlewares\validate.js
 backend\src\repositories\dashboard.repository.js
 backend\src\repositories\empresa.repository.js
@@ -36,7 +40,6 @@ backend\src\repositories\loginAttempt.repository.js
 backend\src\repositories\mensualidad.repository.js
 backend\src\repositories\movimiento.repository.js
 backend\src\repositories\reportes.repository.js
-backend\src\repositories\reportes.schema.js
 backend\src\repositories\tarifa.repository.js
 backend\src\repositories\ticket.repository.js
 backend\src\repositories\tipoVehiculo.repository.js
@@ -86,6 +89,7 @@ backend\src\validators\dashboard.schema.js
 backend\src\validators\empresa.schema.js
 backend\src\validators\mensualidades.schema.js
 backend\src\validators\movimientos.schema.js
+backend\src\validators\reportes.schema.js
 backend\src\validators\tarifas.schema.js
 backend\src\validators\tipos.schema.js
 backend\src\validators\turnos.schema.js
@@ -105,9 +109,6 @@ frontend\src\App.jsx
 frontend\src\index.css
 frontend\src\main.jsx
 frontend\src\api\client.js
-frontend\src\assets\hero.png
-frontend\src\assets\react.svg
-frontend\src\assets\vite.svg
 frontend\src\components\ErrorBoundary.jsx
 frontend\src\components\ProtectedRoute.jsx
 frontend\src\components\layout\AppLayout.jsx
@@ -134,7 +135,6 @@ frontend\src\context\AuthContext.jsx
 frontend\src\hooks\useApi.js
 frontend\src\hooks\useEmpresa.js
 frontend\src\hooks\useMovimientos.js
-frontend\src\hooks\useStylesheet.js
 frontend\src\pages\ConfiguracionPage.jsx
 frontend\src\pages\DashboardPage.jsx
 frontend\src\pages\IngresoSalidaPage.jsx
@@ -261,7 +261,7 @@ Fase 3: reportes (Excel/PDF), mensualidades, dashboard, impresión de tickets.
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node --watch-path=./src --watch-path=./scripts src/server.js",
+    "dev": "nodemon --watch src --watch scripts --ext js,json src/server.js",
     "start": "node src/server.js",
     "test": "vitest run",
     "db:seed": "node scripts/seed.js"
@@ -290,6 +290,7 @@ Fase 3: reportes (Excel/PDF), mensualidades, dashboard, impresión de tickets.
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "nodemon": "^3.1.14",
     "vitest": "^5.0.4"
   }
 }
@@ -831,46 +832,195 @@ await pool.end();
 
 
 //==========================================
+// FILE: backend\scripts\verificar-esquema.js
+//==========================================
+// backend/scripts/verificar-esquema.js
+import "dotenv/config";
+import mysql from "mysql2/promise";
+
+const ESPERADO = {
+  empresas:
+    "id_empresa nombre nit direccion telefono email activa plan fecha_registro fecha_vencimiento",
+  empresa_logos: "id_empresa mime datos",
+  configuracion_empresa:
+    "id_empresa horario_apertura horario_cierre iva_porcentaje moneda zona_horaria operacion_24h",
+  usuarios:
+    "id_usuario id_empresa nombre usuario_login password_hash rol activo ultimo_acceso fecha_creacion",
+  tipos_vehiculos:
+    "id_tipo id_empresa nombre codigo capacidad activo fecha_creacion",
+  vehiculos: "id_vehiculo id_empresa placa id_tipo color modelo fecha_registro",
+  tarifas:
+    "id_tarifa id_empresa id_tipo valor_hora valor_minuto valor_dia_completo fecha_vigencia_desde fecha_vigencia_hasta activa modo_cobro paso_minutos_a_horas paso_horas_a_dias redondeo_horas redondeo_dias",
+  movimientos:
+    "id_movimiento id_empresa id_vehiculo id_tarifa fecha_entrada fecha_salida total_a_pagar id_usuario_entrada id_usuario_salida estado",
+  pagos:
+    "id_pago id_empresa id_movimiento id_turno metodo_pago monto monto_recibido fecha_pago referencia_pago id_usuario",
+  turnos:
+    "id_turno id_empresa id_usuario fecha_apertura base_inicial observacion_apertura fecha_cierre total_efectivo total_tarjeta total_qr total_general diferencia observacion_cierre estado",
+  mensualidades:
+    "id_mensualidad id_empresa id_vehiculo titular_nombre titular_documento titular_telefono titular_email valor_mensual fecha_inicio fecha_fin auto_renovar estado observaciones fecha_creacion",
+  mensualidades_pagos:
+    "id_pago_mensualidad id_empresa id_mensualidad id_turno fecha_pago periodo_desde periodo_hasta metodo_pago monto referencia_pago id_usuario",
+  login_attempts: "id_empresa usuario_login exitoso ip_address fecha_intento",
+};
+// Índices únicos que sostienen la integridad (columnas generadas de la fase 1)
+const UNICOS = {
+  movimientos: "vehiculo_activo",
+  turnos: "usuario_abierto",
+  tarifas: "tipo_activo",
+};
+
+const db = await mysql.createConnection({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+});
+const bd = process.env.DB_NAME;
+let fallos = 0;
+const ok = (m) => console.log(`  ✔ ${m}`);
+const mal = (m) => (fallos++, console.log(`  ✘ ${m}`));
+
+const [[{ v }]] = await db.query("SELECT VERSION() AS v");
+console.log(`Servidor: ${v}`);
+const [mayor, menor, parche] = v.split("-")[0].split(".").map(Number);
+/mariadb/i.test(v)
+  ? mal(
+      "MariaDB no está soportada (se usa INSERT … AS alias): usa MySQL 8.0.19 o superior",
+    )
+  : mayor > 8 || (mayor === 8 && (menor > 0 || parche >= 19))
+    ? ok("Versión de MySQL compatible")
+    : mal("Se requiere MySQL 8.0.19 o superior");
+
+const [cols] = await db.query(
+  "SELECT TABLE_NAME AS t, COLUMN_NAME AS c, COLUMN_TYPE AS ct FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?",
+  [bd],
+);
+const porTabla = new Map();
+for (const { t, c, ct } of cols)
+  (porTabla.get(t) ?? porTabla.set(t, new Map()).get(t)).set(c, ct);
+
+console.log("\nColumnas");
+for (const [tabla, lista] of Object.entries(ESPERADO)) {
+  const reales = porTabla.get(tabla);
+  if (!reales) {
+    mal(`falta la tabla ${tabla}`);
+    continue;
+  }
+  const faltan = lista.split(" ").filter((c) => !reales.has(c));
+  faltan.length ? mal(`${tabla}: faltan ${faltan.join(", ")}`) : ok(tabla);
+}
+if (porTabla.get("usuarios")?.has("contraseña"))
+  mal("usuarios.contraseña existe: esta parece la base VIEJA, no la nueva");
+
+console.log("\nÍndices únicos de integridad");
+const [idx] = await db.query(
+  "SELECT TABLE_NAME AS t, INDEX_NAME AS i, COLUMN_NAME AS c FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND NON_UNIQUE = 0",
+  [bd],
+);
+for (const [tabla, col] of Object.entries(UNICOS))
+  idx.some((x) => x.t === tabla && x.c === col)
+    ? ok(`${tabla}.${col}`)
+    : mal(`${tabla}: falta un índice UNIQUE sobre ${col}`);
+
+console.log("\nValores permitidos de metodo_pago");
+const enumDe = (t) => porTabla.get(t)?.get("metodo_pago") ?? "";
+["efectivo", "tarjeta", "QR"].every((m) => enumDe("pagos").includes(`'${m}'`))
+  ? ok("pagos")
+  : mal("pagos.metodo_pago debe admitir efectivo, tarjeta y QR");
+["efectivo", "tarjeta", "QR", "transferencia"].every((m) =>
+  enumDe("mensualidades_pagos").includes(`'${m}'`),
+)
+  ? ok("mensualidades_pagos")
+  : mal("mensualidades_pagos.metodo_pago debe admitir además transferencia");
+
+await db.end();
+console.log(
+  fallos
+    ? `\n${fallos} problema(s). Corrige schema.sql (o la base) y vuelve a ejecutar.`
+    : "\nEsquema OK.",
+);
+process.exitCode = fallos ? 1 : 0;
+
+
+
+
+//==========================================
 // FILE: backend\src\app.js
 //==========================================
+// backend/src/app.js
 import express from "express";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import helmet from "helmet";
 import cors from "cors";
-import morgan from "morgan";
 import cookieParser from "cookie-parser";
+import morgan from "morgan";
+import rateLimit from "express-rate-limit";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { env } from "./config/env.js";
 import routes from "./routes/index.js";
-import { errorHandler, notFoundHandler } from "./middlewares/errorHandler.js";
+import { sameOrigin } from "./middlewares/sameOrigin.js";
+import { errorHandler } from "./middlewares/errorHandler.js";
+import { AppError } from "./utils/AppError.js";
 
-export const app = express();
+const app = express();
+const https = String(env.COOKIE_SECURE) === "true";
 
-app.set("trust proxy", 1); // detrás de un proxy (nginx), req.ip será la IP real del cliente
-app.use(helmet()); // cabeceras de seguridad (CSP, X-Frame-Options, etc.)
-app.use(cors({ origin: env.CORS_ORIGIN, credentials: true })); // SOLO tu frontend; credentials permite la cookie
-app.use(express.json({ limit: "100kb" })); // tope de tamaño del body
+app.set("trust proxy", env.TRUST_PROXY); // número de proxies delante (0 = ninguno)
+app.disable("x-powered-by");
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      // Sin HTTPS no se debe forzar la mejora a https: deja la app en blanco.
+      directives: { "upgrade-insecure-requests": https ? [] : null },
+    },
+    hsts: https, // HSTS solo tiene sentido con HTTPS
+  }),
+);
+app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
+app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
+app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
-if (env.NODE_ENV !== "test")
-  app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
 
-app.use("/api", routes);
-app.use("/api", notFoundHandler); // /api/loquesea inexistente -> 404 JSON
+app.use(
+  "/api",
+  rateLimit({
+    windowMs: 60_000,
+    limit: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  sameOrigin,
+  routes,
+  (req, res, next) =>
+    next(new AppError("Ruta no encontrada", 404, "NOT_FOUND")),
+);
 
-// En producción el mismo servidor entrega el frontend compilado (frontend/dist) y el
-// "fallback" a index.html para que React Router maneje las rutas del navegador.
 if (env.NODE_ENV === "production") {
   const dist = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "../../frontend/dist",
   );
-  app.use(express.static(dist));
-  app.get("/{*splat}", (_req, res) =>
-    res.sendFile(path.join(dist, "index.html")),
+  app.use(
+    express.static(dist, {
+      index: false,
+      setHeaders: (res, p) =>
+        p.includes(`${path.sep}assets${path.sep}`) &&
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
+    }),
+  );
+  // Express 5 ya no acepta "*": se usa una regex que excluye /api para el fallback de la SPA.
+  app.get(/^\/(?!api\/).*/, (req, res) =>
+    res
+      .set("Cache-Control", "no-cache")
+      .sendFile(path.join(dist, "index.html")),
   );
 }
 
-app.use(errorHandler); // SIEMPRE el último
+app.use(errorHandler);
+export { app };
+export default app;
 
 
 
@@ -878,6 +1028,7 @@ app.use(errorHandler); // SIEMPRE el último
 //==========================================
 // FILE: backend\src\server.js
 //==========================================
+// backend/src/server.js
 import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { pool } from "./config/db.js";
@@ -901,6 +1052,7 @@ process.on("SIGTERM", shutdown);
 //==========================================
 // FILE: backend\src\config\db.js
 //==========================================
+// backend/src/config/db.js
 import mysql from "mysql2/promise";
 import { env } from "./env.js";
 
@@ -948,6 +1100,7 @@ export async function withTransaction(fn) {
 //==========================================
 // FILE: backend\src\config\env.js
 //==========================================
+// backend/src/config/env.js
 // Valida las variables de entorno AL ARRANCAR. Si falta una, el proceso muere con un
 // mensaje claro ("fail fast") en vez de fallar misteriosamente horas después.
 // Aquí desaparece el fallback "tu_secreto_jwt" (S1).
@@ -992,6 +1145,7 @@ export const env = parsed.data;
 //==========================================
 // FILE: backend\src\controllers\auth.controller.js
 //==========================================
+// backend/src/controllers/auth.controller.js
 import { env } from "../config/env.js";
 import { COOKIE_NAME } from "../middlewares/authenticate.js";
 import * as authService from "../services/auth.service.js";
@@ -1029,6 +1183,7 @@ export function logout(_req, res) {
 //==========================================
 // FILE: backend\src\controllers\movimientos.controller.js
 //==========================================
+// backend/src/controllers/movimientos.controller.js
 import * as service from "../services/movimientos.service.js";
 
 // Cada handler es async y SIN try/catch: Express 5 envía el error rechazado al errorHandler.
@@ -1103,6 +1258,7 @@ export const tiposController = {
 //==========================================
 // FILE: backend\src\controllers\tiposVehiculos.controller.js
 //==========================================
+// backend/src/controllers/tiposVehiculos.controller.js
 import * as repo from "../repositories/tipoVehiculo.repository.js";
 
 export async function listActivos(req, res) {
@@ -1143,25 +1299,42 @@ export const vehiculosController = {
 //==========================================
 // FILE: backend\src\middlewares\authenticate.js
 //==========================================
+// backend/src/middlewares/authenticate.js
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 import { AppError } from "../utils/AppError.js";
+import { sesionVigente } from "./sessionGuard.js";
 
 export const COOKIE_NAME = "ps_token";
 
-// Lee el JWT de la cookie httpOnly (JavaScript del navegador NO puede leerla => un XSS no roba la sesión).
-export function authenticate(req, _res, next) {
+// Lee el JWT de la cookie httpOnly. Además, verifica contra la BD que el usuario
+// siga activo y con el rol actual (no el del token, que puede estar desactualizado).
+export async function authenticate(req, _res, next) {
   const token = req.cookies?.[COOKIE_NAME];
   if (!token) throw AppError.unauthorized();
+
+  let payload;
   try {
     // algorithms fijo: evita ataques de "alg: none" / confusión de algoritmo
-    const p = jwt.verify(token, env.JWT_SECRET, { algorithms: ["HS256"] });
-    // El token lleva SOLO lo mínimo (el original metía el objeto empresa completo)
-    req.user = { id: p.sub, empresaId: p.emp, rol: p.rol, nombre: p.nom };
-    next();
+    payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ["HS256"] });
   } catch {
     throw AppError.unauthorized("Sesión inválida o expirada", "TOKEN_INVALID");
   }
+
+  req.user = {
+    id: payload.sub,
+    empresaId: payload.emp,
+    rol: payload.rol,
+    nombre: payload.nom,
+  };
+
+  // El token puede ser válido pero el usuario ya no estar activo,
+  // o su rol haber cambiado. La BD manda.
+  const vigente = await sesionVigente(req.user);
+  if (!vigente) throw new AppError("Sesión no válida", 401, "SESSION_INVALID");
+  req.user.rol = vigente.rol;
+
+  next();
 }
 
 // Fábrica de middleware de autorización por rol: requireRole('admin')
@@ -1179,6 +1352,7 @@ export const requireRole =
 //==========================================
 // FILE: backend\src\middlewares\errorHandler.js
 //==========================================
+// backend/src/middlewares/errorHandler.js
 import { ZodError } from "zod";
 import { AppError } from "../utils/AppError.js";
 import { env } from "../config/env.js";
@@ -1194,14 +1368,12 @@ export const notFoundHandler = (_req, res) =>
 // eslint-disable-next-line no-unused-vars
 export function errorHandler(err, req, res, next) {
   if (err instanceof AppError) {
-    return res
-      .status(err.status)
-      .json({
-        success: false,
-        code: err.code,
-        message: err.message,
-        details: err.details,
-      });
+    return res.status(err.status).json({
+      success: false,
+      code: err.code,
+      message: err.message,
+      details: err.details,
+    });
   }
   if (err instanceof ZodError) {
     return res.status(400).json({
@@ -1215,13 +1387,11 @@ export function errorHandler(err, req, res, next) {
     });
   }
   if (err?.code === "ER_DUP_ENTRY") {
-    return res
-      .status(409)
-      .json({
-        success: false,
-        code: "DUPLICATE",
-        message: "El registro ya existe",
-      });
+    return res.status(409).json({
+      success: false,
+      code: "DUPLICATE",
+      message: "El registro ya existe",
+    });
   }
   if (err?.type === "entity.parse.failed") {
     // JSON mal formado
@@ -1243,8 +1413,67 @@ export function errorHandler(err, req, res, next) {
 
 
 //==========================================
+// FILE: backend\src\middlewares\sameOrigin.js
+//==========================================
+// backend/src/middlewares/sameOrigin.js
+import { env } from "../config/env.js";
+import { AppError } from "../utils/AppError.js";
+
+const SEGUROS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+export function sameOrigin(req, res, next) {
+  if (SEGUROS.has(req.method)) return next();
+  const origen = req.get("origin");
+  if (!origen) return next(); // curl, tests y clientes que no son navegador
+  const propios = new Set([
+    env.CORS_ORIGIN,
+    `${req.protocol}://${req.get("host")}`,
+  ]);
+  return propios.has(origen)
+    ? next()
+    : next(new AppError("Origen no permitido", 403, "BAD_ORIGIN"));
+}
+
+
+
+
+//==========================================
+// FILE: backend\src\middlewares\sessionGuard.js
+//==========================================
+// backend/src/middlewares/sessionGuard.js
+import { pool } from "../config/db.js";
+
+const TTL_MS = 30_000;
+const cache = new Map(); // id_usuario -> { exp, estado }
+
+// Llamar tras editar o desactivar un usuario para que el cambio sea inmediato.
+export const invalidarSesion = (idUsuario) => cache.delete(Number(idUsuario));
+
+export async function sesionVigente(user) {
+  const hit = cache.get(user.id);
+  if (hit && hit.exp > Date.now()) return hit.estado;
+
+  const [rows] = await pool.query(
+    `SELECT u.rol, u.activo, e.activa AS empresa_activa
+       FROM usuarios u JOIN empresas e ON e.id_empresa = u.id_empresa
+      WHERE u.id_usuario = ? AND u.id_empresa = ?`,
+    [user.id, user.empresaId],
+  );
+  const r = rows[0];
+  const estado = r && r.activo && r.empresa_activa ? { rol: r.rol } : null;
+
+  if (cache.size > 5000) cache.clear(); // tope de seguridad
+  cache.set(user.id, { exp: Date.now() + TTL_MS, estado });
+  return estado;
+}
+
+
+
+
+//==========================================
 // FILE: backend\src\middlewares\validate.js
 //==========================================
+// backend/src/middlewares/validate.js
 // Valida body/params/query con esquemas zod y deja el resultado LIMPIO en req.valid.
 // Por qué req.valid y no sobrescribir req.query: en Express 5 req.query es de solo lectura.
 // zod además "transforma": recorta espacios, convierte a número, descarta campos desconocidos.
@@ -1406,6 +1635,7 @@ export async function findConfig(empresaId) {
 //==========================================
 // FILE: backend\src\repositories\loginAttempt.repository.js
 //==========================================
+// backend/src/repositories/loginAttempt.repository.js
 import { pool } from "../config/db.js";
 
 export const register = (empresaId, login, exitoso, ip) =>
@@ -1606,6 +1836,7 @@ export const mensualidadRepo = {
 //==========================================
 // FILE: backend\src\repositories\movimiento.repository.js
 //==========================================
+// backend/src/repositories/movimiento.repository.js
 import { pool } from "../config/db.js";
 
 // IMPORTANTE (arregla S4): CADA consulta lleva `id_empresa = ?`. Es el "candado" multi-empresa.
@@ -1849,53 +2080,6 @@ export const reportesRepo = {
 
 
 //==========================================
-// FILE: backend\src\repositories\reportes.schema.js
-//==========================================
-// backend/src/validators/reportes.schema.js
-import { z } from "zod";
-
-const ymd = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida")
-  .refine((v) => !Number.isNaN(Date.parse(v)), "Fecha inválida");
-const vacioAUndef = (v) => (v === "" ? undefined : v);
-
-export const reporteQuerySchema = z.object({
-  desde: ymd.optional(),
-  hasta: ymd.optional(),
-  tipo: z
-    .union([
-      z.literal(""),
-      z
-        .string()
-        .trim()
-        .toLowerCase()
-        .regex(/^[a-z0-9_]{1,20}$/),
-    ])
-    .optional()
-    .transform(vacioAUndef),
-  estado: z
-    .enum(["", "activo", "finalizado"])
-    .optional()
-    .transform(vacioAUndef),
-  placa: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .max(10)
-    .optional()
-    .transform(vacioAUndef),
-  usuario: z.string().trim().max(50).optional().transform(vacioAUndef),
-  page: z.coerce.number().int().min(0).max(100000).default(0),
-  pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  limit: z.coerce.number().int().min(1).max(5000).default(1000),
-  top: z.coerce.number().int().min(1).max(50).default(10),
-});
-
-
-
-
-//==========================================
 // FILE: backend\src\repositories\tarifa.repository.js
 //==========================================
 // backend/src/repositories/tarifa.repository.js
@@ -1906,7 +2090,7 @@ export const tarifaRepo = {
     const [r] = await pool.query(
       `SELECT t.id_tarifa, t.id_tipo, t.valor_minuto, t.valor_hora, t.valor_dia_completo, t.modo_cobro,
               t.paso_minutos_a_horas, t.paso_horas_a_dias, t.redondeo_horas, t.redondeo_dias,
-              t.fecha_vigencia_desde, tv.nombre AS tipo_nombre, tv.codigo AS tipo_codigo
+              t.vigente_desde, tv.nombre AS tipo_nombre, tv.codigo AS tipo_codigo
          FROM tarifas t JOIN tipos_vehiculos tv ON tv.id_tipo = t.id_tipo
         WHERE t.id_empresa = ? AND t.activa = TRUE
         ORDER BY tv.nombre`,
@@ -1914,14 +2098,15 @@ export const tarifaRepo = {
     );
     return r;
   },
+
   // Se llama dentro de una transacción: cierra la vigencia actual e inserta la nueva.
   async reemplazar(conn, empresaId, t) {
     await conn.query(
-      "UPDATE tarifas SET activa = FALSE, fecha_vigencia_hasta = UTC_TIMESTAMP() WHERE id_empresa = ? AND id_tipo = ? AND activa = TRUE",
+      "UPDATE tarifas SET activa = FALSE, vigente_hasta = UTC_TIMESTAMP() WHERE id_empresa = ? AND id_tipo = ? AND activa = TRUE",
       [empresaId, t.id_tipo],
     );
     const [r] = await conn.query(
-      `INSERT INTO tarifas (id_empresa, id_tipo, valor_hora, valor_minuto, valor_dia_completo, fecha_vigencia_desde,
+      `INSERT INTO tarifas (id_empresa, id_tipo, valor_hora, valor_minuto, valor_dia_completo, vigente_desde,
                             activa, modo_cobro, paso_minutos_a_horas, paso_horas_a_dias, redondeo_horas, redondeo_dias)
        VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(), TRUE, ?, ?, ?, ?, ?)`,
       [
@@ -1995,6 +2180,17 @@ export const tipoRepo = {
     );
     return r;
   },
+
+  // NUEVO: usado por movimientos.service (ingreso) para validar el tipo dentro
+  // de la transacción y con el filtro multi-empresa.
+  async findActivo(empresaId, id, conn = pool) {
+    const [r] = await conn.query(
+      "SELECT id_tipo, nombre, codigo FROM tipos_vehiculos WHERE id_tipo = ? AND id_empresa = ? AND activo = TRUE",
+      [id, empresaId],
+    );
+    return r[0] ?? null;
+  },
+
   async listar(empresaId) {
     const [r] = await pool.query(
       `SELECT tv.id_tipo, tv.nombre, tv.codigo, tv.capacidad, tv.activo, tv.fecha_creacion,
@@ -2007,6 +2203,7 @@ export const tipoRepo = {
     );
     return r;
   },
+
   async porId(empresaId, id) {
     const [r] = await pool.query(
       "SELECT id_tipo, nombre, codigo, capacidad, activo, fecha_creacion FROM tipos_vehiculos WHERE id_tipo = ? AND id_empresa = ?",
@@ -2014,6 +2211,7 @@ export const tipoRepo = {
     );
     return r[0] ?? null;
   },
+
   async crear(empresaId, d) {
     const [r] = await pool.query(
       "INSERT INTO tipos_vehiculos (id_empresa, nombre, codigo, capacidad, activo) VALUES (?, ?, ?, ?, ?)",
@@ -2021,6 +2219,7 @@ export const tipoRepo = {
     );
     return r.insertId;
   },
+
   async actualizar(empresaId, id, d) {
     const [r] = await pool.query(
       "UPDATE tipos_vehiculos SET nombre = ?, codigo = ?, capacidad = ?, activo = ? WHERE id_tipo = ? AND id_empresa = ?",
@@ -2028,6 +2227,7 @@ export const tipoRepo = {
     );
     return r.affectedRows;
   },
+
   async usos(empresaId, id) {
     const [[v]] = await pool.query(
       "SELECT COUNT(*) AS n FROM vehiculos WHERE id_tipo = ? AND id_empresa = ?",
@@ -2039,6 +2239,7 @@ export const tipoRepo = {
     );
     return { vehiculos: v.n, tarifas: t.n };
   },
+
   async eliminar(empresaId, id) {
     const [r] = await pool.query(
       "DELETE FROM tipos_vehiculos WHERE id_tipo = ? AND id_empresa = ?",
@@ -2132,6 +2333,7 @@ export const turnoRepo = {
 //==========================================
 // FILE: backend\src\repositories\usuario.repository.js
 //==========================================
+// backend/src/repositories/usuario.repository.js
 import { pool } from "../config/db.js";
 
 export async function findActivoByLogin(empresaId, login) {
@@ -2300,6 +2502,7 @@ export const vehiculoRepo = {
 //==========================================
 // FILE: backend\src\routes\auth.routes.js
 //==========================================
+// backend/src/routes/auth.routes.js
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { validate } from "../middlewares/validate.js";
@@ -2430,7 +2633,7 @@ export default r;
 //==========================================
 // FILE: backend\src\routes\index.js
 //==========================================
-// backend/src/routes/index.js (añade)
+// backend/src/routes/index.js
 import { Router } from "express";
 import auth from "./auth.routes.js";
 import movimientos from "./movimientos.routes.js";
@@ -2538,6 +2741,7 @@ export default r;
 //==========================================
 // FILE: backend\src\routes\movimientos.routes.js
 //==========================================
+// backend/src/routes/movimientos.routes.js
 import { Router } from "express";
 import { authenticate } from "../middlewares/authenticate.js";
 import { validate } from "../middlewares/validate.js";
@@ -2644,7 +2848,7 @@ export default r;
 //==========================================
 // FILE: backend\src\routes\ticket.routes.js
 //==========================================
-// backend/src/routes/ticket.routes.js  (se monta en /movimientos, junto a las rutas de fase 1)
+// backend/src/routes/ticket.routes.js
 import { Router } from "express";
 import { authenticate } from "../middlewares/authenticate.js";
 import { validate } from "../middlewares/validate.js";
@@ -2749,10 +2953,13 @@ import { usuariosService as s } from "../services/usuarios.service.js";
 
 const r = Router();
 r.use(authenticate, requireRole("admin"));
+
 r.get("/", async (req, res) => ok(res, await s.listar(req.user)));
+
 r.post("/", validate({ body: usuarioCrearSchema }), async (req, res) =>
   ok(res, await s.crear(req.user, req.valid.body), 201),
 );
+
 r.put(
   "/:id",
   validate({ params: idParamSchema, body: usuarioActualizarSchema }),
@@ -2761,6 +2968,7 @@ r.put(
     ok(res, { updated: true })
   ),
 );
+
 r.delete(
   "/:id",
   validate({ params: idParamSchema }),
@@ -2769,6 +2977,7 @@ r.delete(
     ok(res, { deactivated: true })
   ),
 );
+
 export default r;
 
 
@@ -2805,6 +3014,7 @@ export default r;
 //==========================================
 // FILE: backend\src\services\auth.service.js
 //==========================================
+// backend/src/services/auth.service.js
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
@@ -3323,11 +3533,12 @@ export const mensualidadesService = {
 //==========================================
 // FILE: backend\src\services\movimientos.service.js
 //==========================================
+// backend/src/services/movimientos.service.js
 import { withTransaction } from "../config/db.js";
 import { AppError } from "../utils/AppError.js";
 import { calcularTotal } from "./pricing.service.js";
 import * as movRepo from "../repositories/movimiento.repository.js";
-import * as tipoRepo from "../repositories/tipoVehiculo.repository.js";
+import { tipoRepo } from "../repositories/tipoVehiculo.repository.js";
 
 const aCentavos = (n) => Math.round(Number(n) * 100);
 
@@ -3348,6 +3559,9 @@ export async function registrarIngreso({
   placa,
   tipoId,
 }) {
+  console.log("[DEBUG] typeof tipoRepo:", typeof tipoRepo);
+  console.log("[DEBUG] tipoRepo keys:", Object.keys(tipoRepo));
+  console.log("[DEBUG] typeof findActivo:", typeof tipoRepo.findActivo);
   return withTransaction(async (conn) => {
     const tipo = await tipoRepo.findActivo(empresaId, tipoId, conn);
     if (!tipo)
@@ -3399,7 +3613,7 @@ export async function calcularSalida({ empresaId, placa }) {
   const mov = await movRepo.findActivoByPlaca(empresaId, placa);
   if (!mov)
     throw AppError.notFound(
-      "El vehículo no tiene ingreso activo",
+      `La placa ${placa} no tiene ingreso activo. Verifica la placa.`,
       "NO_ACTIVE_MOVEMENT",
     );
 
@@ -4238,7 +4452,6 @@ function armarTotales(rows) {
     const k = String(x.metodo_pago).toLowerCase();
     if (k in t) t[k] = r2(Number(x.total));
   }
-  // Lo "contable" de caja es efectivo + tarjeta + QR. La transferencia (solo mensualidades) se informa aparte.
   return { ...t, total: r2(t.efectivo + t.tarjeta + t.qr) };
 }
 
@@ -4262,7 +4475,7 @@ export const turnosService = {
   async resumen(u) {
     const turno = await turnoRepo.abierto(u.empresaId, u.id);
     if (!turno)
-      throw new AppError("No tienes un turno abierto", 409, "NO_OPEN_SHIFT");
+      throw AppError.conflict("No tienes un turno abierto", "NO_OPEN_SHIFT");
     return { turno, ...(await resumen(u.empresaId, turno)) };
   },
 
@@ -4281,7 +4494,7 @@ export const turnosService = {
         forUpdate: true,
       });
       if (!turno)
-        throw new AppError("No tienes un turno abierto", 409, "NO_OPEN_SHIFT");
+        throw AppError.conflict("No tienes un turno abierto", "NO_OPEN_SHIFT");
 
       const { totales: esperado, stats } = await resumen(
         u.empresaId,
@@ -4293,7 +4506,7 @@ export const turnosService = {
         tarjeta: d.total_tarjeta,
         qr: d.total_qr,
       };
-      conteo.total = r2(conteo.efectivo + conteo.tarjeta + conteo.qr); // se calcula aquí, no se confía en el cliente
+      conteo.total = r2(conteo.efectivo + conteo.tarjeta + conteo.qr);
       const diferencia = r2(conteo.total - esperado.total);
 
       await turnoRepo.cerrar(conn, turno.id_turno, {
@@ -4319,9 +4532,8 @@ export const turnosService = {
 
   async detalle(u, id) {
     const t = await turnoRepo.porId(u.empresaId, id);
-    // Un operador solo ve sus propios turnos; el admin ve los de toda la empresa.
     if (!t || (u.rol !== "admin" && t.id_usuario !== u.id))
-      throw new AppError("Turno no encontrado", 404, "NOT_FOUND");
+      throw AppError.notFound("Turno no encontrado");
     return { turno: t, ...(await resumen(u.empresaId, t)) };
   },
 };
@@ -4337,6 +4549,7 @@ import bcrypt from "bcryptjs";
 import { AppError } from "../utils/AppError.js";
 import { mapDb } from "../utils/mapDb.js";
 import { usuarioGestionRepo as repo } from "../repositories/usuarioGestion.repository.js";
+import { invalidarSesion } from "../middlewares/sessionGuard.js";
 
 const COST = 12;
 const DUP = "Ese nombre de usuario ya existe en esta empresa";
@@ -4385,6 +4598,10 @@ export const usuariosService = {
     const campos = { ...d };
     if (password) campos.password_hash = await bcrypt.hash(password, COST);
     await mapDb(() => repo.actualizar(u.empresaId, id, campos), { dup: DUP });
+
+    // Rol, activo o password cambiaron: la próxima petición con el token viejo
+    // debe revalidar contra la BD, no leer el rol anterior de la caché.
+    invalidarSesion(id);
   },
 
   desactivar(u, id) {
@@ -4467,6 +4684,7 @@ export const vehiculosService = {
 //==========================================
 // FILE: backend\src\utils\AppError.js
 //==========================================
+// backend/src/utils/AppError.js
 // Error "esperado" de negocio con código HTTP. El errorHandler lo convierte en respuesta JSON.
 // Los demás errores (bugs) se tratan como 500 y NO se exponen al cliente.
 export class AppError extends Error {
@@ -4698,6 +4916,7 @@ export function qs(obj) {
 //==========================================
 // FILE: backend\src\validators\auth.schema.js
 //==========================================
+// backend/src/validators/auth.schema.js
 import { z } from "zod";
 
 export const loginSchema = {
@@ -4866,6 +5085,7 @@ export const pagoParamsSchema = z.object({
 //==========================================
 // FILE: backend\src\validators\movimientos.schema.js
 //==========================================
+// backend/src/validators/movimientos.schema.js
 import { z } from "zod";
 
 const placa = z
@@ -4896,9 +5116,56 @@ export const confirmarSalidaSchema = {
   }),
 };
 
-export const idParamSchema = {
-  params: z.object({ id: z.coerce.number().int().positive() }),
-};
+export const idParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+
+
+
+//==========================================
+// FILE: backend\src\validators\reportes.schema.js
+//==========================================
+// backend/src/validators/reportes.schema.js
+import { z } from "zod";
+
+const ymd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida")
+  .refine((v) => !Number.isNaN(Date.parse(v)), "Fecha inválida");
+const vacioAUndef = (v) => (v === "" ? undefined : v);
+
+export const reporteQuerySchema = z.object({
+  desde: ymd.optional(),
+  hasta: ymd.optional(),
+  tipo: z
+    .union([
+      z.literal(""),
+      z
+        .string()
+        .trim()
+        .toLowerCase()
+        .regex(/^[a-z0-9_]{1,20}$/),
+    ])
+    .optional()
+    .transform(vacioAUndef),
+  estado: z
+    .enum(["", "activo", "finalizado"])
+    .optional()
+    .transform(vacioAUndef),
+  placa: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .max(10)
+    .optional()
+    .transform(vacioAUndef),
+  usuario: z.string().trim().max(50).optional().transform(vacioAUndef),
+  page: z.coerce.number().int().min(0).max(100000).default(0),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  limit: z.coerce.number().int().min(1).max(5000).default(1000),
+  top: z.coerce.number().int().min(1).max(50).default(10),
+});
 
 
 
@@ -5077,6 +5344,7 @@ export const vehiculoSchema = z.object({
 //==========================================
 // FILE: frontend\index.html
 //==========================================
+<!-- frontend/index.html-->
 <!doctype html>
 <html lang="en">
   <head>
@@ -5109,10 +5377,13 @@ export const vehiculoSchema = z.object({
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/poppins": "^5.3.0",
     "@hookform/resolvers": "^5.9.1",
     "@tanstack/react-query": "^5.104.2",
     "axios": "^1.20.0",
     "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^1.55.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -5380,7 +5651,7 @@ export default defineConfig({
 //==========================================
 // FILE: frontend\src\App.jsx
 //==========================================
-// frontend/src/App.jsx  (versión final, con todas las páginas)
+// frontend/src/App.jsx
 import { Routes, Route, Navigate } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AppLayout from "./components/layout/AppLayout";
@@ -5451,7 +5722,7 @@ export default function App() {
 //==========================================
 // FILE: frontend\src\main.jsx
 //==========================================
-// frontend/src/main.jsx  (orden de proveedores; fusiona con el tuyo)
+// frontend/src/main.jsx
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
@@ -5461,6 +5732,9 @@ import { ToastProvider } from "./components/ui/Toast";
 import ErrorBoundary from "./components/ErrorBoundary";
 import App from "./App";
 import "./index.css";
+import "@fontsource/poppins/400.css";
+import "@fontsource/poppins/500.css";
+import "@fontsource/poppins/600.css";
 
 // retry:false evita que un 401 de /auth/me se reintente 3 veces antes de mostrar el login.
 const queryClient = new QueryClient({
@@ -5509,13 +5783,15 @@ api.interceptors.response.use(
   },
 );
 
+export default api;
+
 
 
 
 //==========================================
 // FILE: frontend\src\components\ErrorBoundary.jsx
 //==========================================
-// frontend/src/components/ui/ErrorBoundary.jsx
+// frontend/src/components/ErrorBoundary.jsx
 import { Component } from "react";
 
 export default class ErrorBoundary extends Component {
@@ -5561,7 +5837,10 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 
 // Guard de rutas. Solo experiencia de usuario: la seguridad REAL está en el backend.
-export default function ProtectedRoute({ roles }) {
+// Se usa de dos formas:
+//   - Como layout:   <ProtectedRoute><AppLayout /></ProtectedRoute>  → renderiza children
+//   - Como wrapper:  <ProtectedRoute roles={["admin"]} />             → renderiza <Outlet />
+export default function ProtectedRoute({ roles, children }) {
   const { user, isLoading } = useAuth();
   const location = useLocation();
 
@@ -5571,10 +5850,10 @@ export default function ProtectedRoute({ roles }) {
         Cargando…
       </div>
     );
-  if (!user) return <Navigate to="/" replace state={{ from: location }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
   if (roles && !roles.includes(user.rol))
     return <Navigate to="/admin/dashboard" replace />;
-  return <Outlet />;
+  return children ?? <Outlet />;
 }
 
 
@@ -5585,7 +5864,7 @@ export default function ProtectedRoute({ roles }) {
 //==========================================
 // frontend/src/components/layout/AppLayout.jsx
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Car,
@@ -5635,7 +5914,6 @@ const MENU = [
 function Shell() {
   const { user, logout } = useAuth();
   const { abierto, abrirModal } = useTurno();
-  const navigate = useNavigate();
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const items = MENU.filter((m) => !m.admin || user?.rol === "admin");
@@ -5674,10 +5952,7 @@ function Shell() {
         </nav>
         <div className="border-t border-white/10 p-4">
           <button
-            onClick={async () => {
-              await logout();
-              navigate("/login", { replace: true });
-            }}
+            onClick={logout}
             className="flex w-full items-center gap-3 px-2 py-2 text-sm text-white/80 hover:text-white"
           >
             <LogOut size={18} />
@@ -5831,6 +6106,7 @@ export default function IngresoForm({ onDone }) {
 //==========================================
 // FILE: frontend\src\components\movimientos\PagoModal.jsx
 //==========================================
+// frontend/src/components/movimientos/PagoModal.jsx
 import { useState } from "react";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { formatMoney } from "../../utils/format.js";
@@ -5838,7 +6114,6 @@ import Button from "../ui/Button.jsx";
 
 const METODOS = ["efectivo", "tarjeta", "QR", "transferencia"];
 
-// Pagos mixtos: el cajero agrega medios hasta cubrir el total. Muestra vuelto o faltante en vivo.
 export default function PagoModal({
   factura,
   onConfirm,
@@ -5848,14 +6123,26 @@ export default function PagoModal({
 }) {
   const { user } = useAuth();
   const moneda = user.config?.moneda ?? "COP";
+
+  // Punto de partida: UNA fila de efectivo con el total exacto.
+  // El cajero debe editar este monto si el cliente entregó más.
   const [pagos, setPagos] = useState([
     { metodo_pago: "efectivo", monto: factura.total },
   ]);
 
   const recibido = pagos.reduce((s, p) => s + Number(p.monto || 0), 0);
   const diff = recibido - factura.total;
+
   const set = (i, patch) =>
     setPagos((ps) => ps.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+
+  const cubrirConTotal = () => {
+    // Rellena la primera fila con el total exacto en efectivo.
+    // Útil cuando el cajero ya había editado el campo y quiere volver al default.
+    const otros = pagos.slice(1).reduce((s, p) => s + Number(p.monto || 0), 0);
+    const faltante = Math.max(0, factura.total - otros);
+    set(0, { metodo_pago: "efectivo", monto: faltante });
+  };
 
   return (
     <div
@@ -5865,56 +6152,78 @@ export default function PagoModal({
     >
       <div className="w-full max-w-md space-y-4 rounded-xl bg-white p-6 shadow-xl">
         <h3 className="text-lg font-semibold">Registrar pago</h3>
-        <p>
-          Total a pagar: <b>{formatMoney(factura.total, moneda)}</b>
-        </p>
 
-        {pagos.map((p, i) => (
-          <div key={i} className="flex gap-2">
-            <select
-              value={p.metodo_pago}
-              onChange={(e) => set(i, { metodo_pago: e.target.value })}
-              className="rounded-lg border px-2 py-1"
-            >
-              {METODOS.map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={p.monto}
-              onChange={(e) => set(i, { monto: e.target.value })}
-              className="w-full rounded-lg border px-2 py-1"
-            />
-            {pagos.length > 1 && (
-              <button
-                onClick={() => setPagos((ps) => ps.filter((_, j) => j !== i))}
-                aria-label="Quitar"
+        <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+          <span className="text-sm text-slate-600">Total a pagar</span>
+          <b className="text-lg">{formatMoney(factura.total, moneda)}</b>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs text-slate-500">
+            Escribe el monto que entrega el cliente por cada medio de pago. Si
+            entrega más del total, el sobrante aparece como vuelto.
+          </p>
+          {pagos.map((p, i) => (
+            <div key={i} className="flex gap-2">
+              <select
+                value={p.metodo_pago}
+                onChange={(e) => set(i, { metodo_pago: e.target.value })}
+                className="rounded-lg border px-2 py-1"
               >
-                ×
-              </button>
-            )}
-          </div>
-        ))}
-        <button
-          type="button"
-          className="text-sm text-brand-600"
-          onClick={() =>
-            setPagos((ps) => [...ps, { metodo_pago: "tarjeta", monto: "" }])
-          }
-        >
-          + Agregar medio de pago
-        </button>
+                {METODOS.map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
+              </select>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={p.monto}
+                onChange={(e) => set(i, { monto: e.target.value })}
+                placeholder="0.00"
+                className="w-full rounded-lg border px-2 py-1"
+              />
+              {pagos.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setPagos((ps) => ps.filter((_, j) => j !== i))}
+                  aria-label="Quitar"
+                  className="rounded px-2 text-slate-500 hover:bg-slate-100"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="text-sm text-brand-600 hover:underline"
+            onClick={() =>
+              setPagos((ps) => [...ps, { metodo_pago: "tarjeta", monto: "" }])
+            }
+          >
+            + Agregar medio de pago
+          </button>
+          <button
+            type="button"
+            className="text-sm text-slate-500 hover:underline"
+            onClick={cubrirConTotal}
+          >
+            Rellenar con el total
+          </button>
+        </div>
 
         <div
           className={`rounded-lg p-3 text-sm ${diff >= 0 ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}
         >
-          Recibido: {formatMoney(recibido, moneda)} ·{" "}
+          Recibido: <b>{formatMoney(recibido, moneda)}</b> ·{" "}
           {diff >= 0 ? "Vuelto" : "Falta"}:{" "}
           <b>{formatMoney(Math.abs(diff), moneda)}</b>
         </div>
+
         {error && (
           <p role="alert" className="text-sm text-red-600">
             {error}
@@ -6371,6 +6680,7 @@ export const buildTicketHtml = (data, tipo, { fmtMoney, fmtDate }) =>
 // Se renderiza a HTML estático para imprimir; las clases (c, b, row) son del CSS de utils/print.js.
 export default function CierreTicket({ empresa, r, fmtMoney, ahora }) {
   const dif = r.diferencia;
+  const cuadra = Math.abs(dif) < 0.01;
   return (
     <div>
       <div className="c">
@@ -6436,7 +6746,13 @@ export default function CierreTicket({ empresa, r, fmtMoney, ahora }) {
         </div>
       )}
       <hr />
-      <div className="b">Diferencia: {fmtMoney(dif)}</div>
+      <div className="b">
+        {cuadra
+          ? "Caja cuadra"
+          : dif < 0
+            ? `FALTANTE EN CAJA: ${fmtMoney(Math.abs(dif))}`
+            : `SOBRANTE EN CAJA: ${fmtMoney(dif)}`}
+      </div>
       {r.observacion && <div>Obs.: {r.observacion}</div>}
     </div>
   );
@@ -6449,7 +6765,7 @@ export default function CierreTicket({ empresa, r, fmtMoney, ahora }) {
 // FILE: frontend\src\components\turnos\TurnoModal.jsx
 //==========================================
 // frontend/src/components/turnos/TurnoModal.jsx
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useQueryClient } from "@tanstack/react-query";
 import { Printer } from "lucide-react";
@@ -6552,9 +6868,34 @@ function Cierre({ onClose }) {
   const [cerrado, setCerrado] = useState(null);
   const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
 
+  // Pre-carga los totales esperados por método de pago cuando el resumen llega.
+  // No sobreescribe lo que el cajero ya haya escrito.
+  useEffect(() => {
+    if (!res?.totales) return;
+    setV((prev) => ({
+      ...prev,
+      ef: prev.ef === "" ? String(res.totales.efectivo) : prev.ef,
+      ta: prev.ta === "" ? String(res.totales.tarjeta) : prev.ta,
+      qr: prev.qr === "" ? String(res.totales.qr) : prev.qr,
+    }));
+  }, [res?.totales]);
+
   const total = num(v.ef) + num(v.ta) + num(v.qr);
   const esperado = res?.totales;
   const diff = esperado ? Math.round((total - esperado.total) * 100) / 100 : 0;
+
+  const imprimir = (data, widthMm) =>
+    printHtml(
+      renderToStaticMarkup(
+        <CierreTicket
+          empresa={empresa}
+          r={data}
+          fmtMoney={fmtMoney}
+          ahora={fmtDate(new Date().toISOString())}
+        />,
+      ),
+      { widthMm, title: "Cierre de turno" },
+    );
 
   async function submit(e) {
     e.preventDefault();
@@ -6569,6 +6910,8 @@ function Cierre({ onClose }) {
       });
       await qc.invalidateQueries({ queryKey: ["turno"] });
       setCerrado(data.data);
+      // Imprime automáticamente al cerrar (80 mm por defecto).
+      imprimir(data.data, 80);
     } catch (err) {
       setError(err.userMessage);
     } finally {
@@ -6576,20 +6919,8 @@ function Cierre({ onClose }) {
     }
   }
 
-  const imprimir = (widthMm) =>
-    printHtml(
-      renderToStaticMarkup(
-        <CierreTicket
-          empresa={empresa}
-          r={cerrado}
-          fmtMoney={fmtMoney}
-          ahora={fmtDate(new Date().toISOString())}
-        />,
-      ),
-      { widthMm, title: "Cierre de turno" },
-    );
-
   if (cerrado) {
+    const dif = cerrado.diferencia;
     return (
       <Modal
         open
@@ -6597,11 +6928,11 @@ function Cierre({ onClose }) {
         title="Turno cerrado"
         footer={
           <>
-            <Button variant="outline" onClick={() => imprimir(58)}>
+            <Button variant="outline" onClick={() => imprimir(cerrado, 58)}>
               <Printer size={14} className="mr-1" />
               Imprimir 58 mm
             </Button>
-            <Button onClick={() => imprimir(80)}>
+            <Button onClick={() => imprimir(cerrado, 80)}>
               <Printer size={14} className="mr-1" />
               Imprimir 80 mm
             </Button>
@@ -6612,11 +6943,19 @@ function Cierre({ onClose }) {
         }
       >
         <p
-          className={`mb-3 rounded-lg px-3 py-2 text-sm ${Math.abs(cerrado.diferencia) < 0.01 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}
+          className={`mb-3 rounded-lg px-3 py-2 text-sm ${
+            Math.abs(dif) < 0.01
+              ? "bg-emerald-50 text-emerald-700"
+              : dif < 0
+                ? "bg-red-50 text-red-700"
+                : "bg-amber-50 text-amber-800"
+          }`}
         >
-          {Math.abs(cerrado.diferencia) < 0.01
-            ? "Turno cerrado sin diferencias."
-            : `Existe una diferencia entre el conteo y el sistema: ${fmtMoney(cerrado.diferencia)}.`}
+          {Math.abs(dif) < 0.01
+            ? "Turno cerrado sin diferencias. Caja cuadra."
+            : dif < 0
+              ? `Falta dinero en caja: ${fmtMoney(Math.abs(dif))}.`
+              : `Sobra dinero en caja: ${fmtMoney(dif)}.`}
         </p>
         <dl className="grid grid-cols-2 gap-2 text-sm">
           <dt className="text-slate-500">Conteo</dt>
@@ -6652,6 +6991,15 @@ function Cierre({ onClose }) {
     >
       <form id="cierre" onSubmit={submit} className="space-y-3">
         <FormError message={error} />
+
+        {esperado?.transferencia > 0 && (
+          <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+            <b>No incluyas esta cifra en Efectivo/Tarjeta/QR.</b> Transferencias
+            de mensualidades en este turno: {fmtMoney(esperado.transferencia)}.
+            No pasan por caja física.
+          </p>
+        )}
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="Efectivo">
             <input
@@ -6691,7 +7039,8 @@ function Cierre({ onClose }) {
             <input readOnly className={inputCls} value={total.toFixed(2)} />
           </Field>
         </div>
-        <div className="flex justify-between text-sm">
+
+        <div className="flex flex-wrap justify-between gap-2 text-sm">
           <span>
             Sistema (esperado):{" "}
             <strong>{esperado ? fmtMoney(esperado.total) : "…"}</strong>
@@ -6700,22 +7049,28 @@ function Cierre({ onClose }) {
             Diferencia:{" "}
             <strong
               className={
-                Math.abs(diff) < 0.01 ? "text-emerald-600" : "text-red-600"
+                Math.abs(diff) < 0.01
+                  ? "text-emerald-600"
+                  : diff < 0
+                    ? "text-red-600"
+                    : "text-amber-700"
               }
             >
               {fmtMoney(diff)}
+              {Math.abs(diff) >= 0.01 && (
+                <span className="ml-1 font-normal">
+                  ({diff < 0 ? "falta" : "sobra"})
+                </span>
+              )}
             </strong>
           </span>
         </div>
-        {esperado?.transferencia > 0 && (
-          <p className="text-xs text-slate-500">
-            Transferencias de mensualidades en este turno:{" "}
-            {fmtMoney(esperado.transferencia)} (no se cuentan en caja).
-          </p>
-        )}
+
         <p className="text-xs text-slate-500">
-          La diferencia es conteo menos sistema.
+          La diferencia es <b>conteo menos sistema</b>. Negativa significa que
+          falta dinero en caja; positiva, que sobra.
         </p>
+
         <Field label="Observación de cierre">
           <input
             maxLength={255}
@@ -6830,6 +7185,7 @@ export default function Badge({ tone = "gray", children }) {
 //==========================================
 // FILE: frontend\src\components\ui\Button.jsx
 //==========================================
+// frontend/src/components/ui/Button.jsx
 // Componente de UI reutilizable. Variantes definidas UNA vez => consistencia en toda la app.
 const variants = {
   primary: "bg-brand-600 text-white hover:bg-brand-700",
@@ -7319,6 +7675,7 @@ export function ToastProvider({ children }) {
 //==========================================
 // FILE: frontend\src\context\AuthContext.jsx
 //==========================================
+// frontend/src/context/AuthContext.jsx
 import { createContext, useContext } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client.js";
@@ -7328,21 +7685,35 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const qc = useQueryClient();
 
-  // "¿Hay sesión?" se le pregunta al servidor (la cookie httpOnly no es legible desde JS).
   const { data: user, isLoading } = useQuery({
     queryKey: ["me"],
     queryFn: () => api.get("/auth/me").then((r) => r.data.data),
-    staleTime: Infinity, // no revalidar sola; se invalida en login/logout
+    staleTime: Infinity,
+    retry: false,
   });
 
   const login = async (credentials) => {
     const { data } = await api.post("/auth/login", credentials);
-    qc.setQueryData(["me"], data.data); // guarda la sesión en caché => ProtectedRoute deja pasar
+    qc.setQueryData(["me"], data.data);
   };
 
   const logout = async () => {
     await api.post("/auth/logout");
-    qc.clear(); // borra TODA la caché (datos de la empresa anterior)
+    // Notifica de forma determinista que la sesión terminó.
+    // setQueryData es más predecible que qc.clear(): escribe null y notifica
+    // a todos los suscriptores de ["me"] al instante.
+    qc.setQueryData(["me"], null);
+    // Limpia el resto del caché de la sesión anterior.
+    qc.removeQueries({ queryKey: ["turno"] });
+    qc.removeQueries({ queryKey: ["empresa"] });
+    qc.removeQueries({ queryKey: ["dashboard"] });
+    qc.removeQueries({ queryKey: ["vehiculos"] });
+    qc.removeQueries({ queryKey: ["usuarios"] });
+    qc.removeQueries({ queryKey: ["tipos"] });
+    qc.removeQueries({ queryKey: ["tarifas"] });
+    qc.removeQueries({ queryKey: ["mensualidades"] });
+    qc.removeQueries({ queryKey: ["reportes"] });
+    qc.removeQueries({ queryKey: ["ticket"] });
   };
 
   return (
@@ -7354,7 +7725,6 @@ export function AuthProvider({ children }) {
   );
 }
 
-// Custom hook: los componentes hacen `const { user } = useAuth()`
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth debe usarse dentro de <AuthProvider>");
@@ -7437,6 +7807,7 @@ export function useFormat() {
 //==========================================
 // FILE: frontend\src\hooks\useMovimientos.js
 //==========================================
+// frontend/src/hooks/useMovimientos.js
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client.js";
 
@@ -7469,12 +7840,6 @@ export const useConfirmarSalida = () =>
       api.post("/movimientos/confirmar-salida", body).then((r) => r.data.data),
   });
 
-
-
-
-//==========================================
-// FILE: frontend\src\hooks\useStylesheet.js
-//==========================================
 
 
 
@@ -8762,13 +9127,13 @@ export default function MensualidadesPage() {
                 onChange={(e) => setDraft({ ...draft, q: e.target.value })}
                 onKeyDown={(e) => e.key === "Enter" && aplicar()}
                 placeholder="Placa, titular o documento"
-                className={`${inputCls} !w-64 !pl-8`}
+                className={`${inputCls} w-64! pl-8!`}
               />
             </div>
             <select
               value={draft.estado}
               onChange={(e) => setDraft({ ...draft, estado: e.target.value })}
-              className={`${inputCls} !w-36`}
+              className={`${inputCls} w-36!`}
             >
               {ESTADOS.map(([v, l]) => (
                 <option key={v} value={v}>
@@ -8967,7 +9332,6 @@ import {
   FileSpreadsheet,
   CalendarDays,
   Printer,
-  CashRegister,
 } from "lucide-react";
 import api from "../api/client";
 import { useGet } from "../hooks/useApi";
@@ -9069,19 +9433,19 @@ function CierresModal({ onClose, hoy }) {
       <div className="mb-3 flex flex-wrap gap-2">
         <input
           type="date"
-          className={`${inputCls} !w-40`}
+          className={`${inputCls} w-40!`}
           value={f.desde}
           onChange={(e) => setF({ ...f, desde: e.target.value })}
         />
         <input
           type="date"
-          className={`${inputCls} !w-40`}
+          className={`${inputCls} w-40!`}
           value={f.hasta}
           onChange={(e) => setF({ ...f, hasta: e.target.value })}
         />
         <input
           placeholder="Usuario"
-          className={`${inputCls} !w-40`}
+          className={`${inputCls} w-40!`}
           value={f.usuario}
           onChange={(e) => setF({ ...f, usuario: e.target.value })}
         />
@@ -9298,7 +9662,7 @@ export default function ReportesPage() {
         title="Filtros de reporte"
         actions={
           <Button variant="outline" onClick={() => setCierres(true)}>
-            <CashRegister size={14} className="mr-1" />
+            <Banknote size={14} className="mr-1" />
             Cierres de turno
           </Button>
         }
@@ -9307,19 +9671,19 @@ export default function ReportesPage() {
           <input
             type="date"
             aria-label="Desde"
-            className={`${inputCls} !w-40`}
+            className={`${inputCls} w-40!`}
             value={f.desde}
             onChange={(e) => setF({ ...f, desde: e.target.value })}
           />
           <input
             type="date"
             aria-label="Hasta"
-            className={`${inputCls} !w-40`}
+            className={`${inputCls} w-40!`}
             value={f.hasta}
             onChange={(e) => setF({ ...f, hasta: e.target.value })}
           />
           <select
-            className={`${inputCls} !w-44`}
+            className={`${inputCls} w-44!`}
             value={f.tipo}
             onChange={(e) => setF({ ...f, tipo: e.target.value })}
           >
@@ -9331,7 +9695,7 @@ export default function ReportesPage() {
             ))}
           </select>
           <select
-            className={`${inputCls} !w-44`}
+            className={`${inputCls} w-44!`}
             value={f.estado}
             onChange={(e) => setF({ ...f, estado: e.target.value })}
           >
@@ -9341,7 +9705,7 @@ export default function ReportesPage() {
           </select>
           <input
             placeholder="Placa"
-            className={`${inputCls} !w-32 uppercase`}
+            className={`${inputCls} w-32! uppercase`}
             value={f.placa}
             onChange={(e) => setF({ ...f, placa: e.target.value })}
           />
@@ -9426,7 +9790,7 @@ export default function ReportesPage() {
           title="Ingresos por día"
           actions={
             <select
-              className={`${inputCls} !w-44 !py-1`}
+              className={`${inputCls} w-44! py-1!`}
               value={metodo}
               onChange={(e) => setMetodo(e.target.value)}
             >
@@ -10903,6 +11267,7 @@ export async function descargar(url, nombre) {
 //==========================================
 // FILE: frontend\src\utils\format.js
 //==========================================
+// frontend/src/utils/format.js
 // Reemplazo de datetime.js (~170 líneas). El backend entrega fechas ISO en UTC ("...Z") y
 // aquí solo se muestran en la zona de la empresa con la API nativa Intl.
 export const formatMoney = (n, currency = "COP") =>
@@ -10945,6 +11310,7 @@ export async function printHtml(html, opts = {}) {
   iframe.style.cssText =
     "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
   document.body.appendChild(iframe);
+
   const doc = iframe.contentWindow.document;
   doc.open();
   doc.write(ticketDocument(html, opts));
@@ -10952,6 +11318,7 @@ export async function printHtml(html, opts = {}) {
 
   const win = iframe.contentWindow;
   const imgs = [...doc.images].filter((i) => !i.complete);
+
   await Promise.race([
     Promise.all(
       imgs.map(
@@ -10963,10 +11330,24 @@ export async function printHtml(html, opts = {}) {
     ),
     new Promise((r) => setTimeout(r, 2500)),
   ]);
-  const limpiar = () => iframe.remove();
+
+  const limpiar = () => {
+    if (iframe.parentNode) iframe.remove();
+  };
   win.onafterprint = limpiar;
-  win.focus();
-  win.print();
+
+  // Pausa breve para que el navegador pinte el documento antes de imprimir.
+  // Sin esto, algunos navegadores ignoran print() sobre iframes ocultos.
+  setTimeout(() => {
+    try {
+      win.focus();
+      win.print();
+    } catch {
+      // El navegador puede bloquear print() si no viene de un gesto de usuario.
+      // En ese caso, el usuario puede reimprimir con los botones del modal.
+    }
+  }, 50);
+
   setTimeout(limpiar, 60_000);
 }
 

@@ -13,7 +13,7 @@ const cabecera = (ws) =>
     c.fill = AZUL;
     c.font = { bold: true, color: { argb: "FFFFFFFF" } };
   });
-const pared = (tz, v) => (v ? paredComoUtc(tz, new Date(v)) : null); // Excel no tiene zonas: se escribe la hora local
+const pared = (tz, v) => (v ? paredComoUtc(tz, new Date(v)) : null);
 
 export function libroReporte({
   empresa,
@@ -155,5 +155,57 @@ export function libroTurnos({ tz, turnos }) {
     (c) => (ws.getColumn(c).numFmt = MONEDA),
   );
   cabecera(ws);
+  return wb;
+}
+
+// NUEVO: hoja "Ingresos por trabajador"
+export function libroPorUsuario({ desde, hasta, filas }) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "ParkSystem";
+  const ws = wb.addWorksheet("Por trabajador", {
+    views: [{ state: "frozen", ySplit: 1 }],
+  });
+  ws.columns = [
+    { header: "Usuario", key: "u", width: 26 },
+    { header: "Login", key: "l", width: 18 },
+    { header: "Rol", key: "r", width: 12 },
+    { header: "Tickets", key: "t", width: 10 },
+    { header: "Efectivo", key: "ef", width: 16 },
+    { header: "Tarjeta", key: "ta", width: 16 },
+    { header: "QR", key: "qr", width: 16 },
+    { header: "Transferencia", key: "tr", width: 16 },
+    { header: "Total", key: "g", width: 16 },
+  ];
+  filas.forEach((f) =>
+    ws.addRow({
+      u: f.nombre,
+      l: f.usuario_login,
+      r: f.rol,
+      t: f.tickets,
+      ef: f.efectivo,
+      ta: f.tarjeta,
+      qr: f.qr,
+      tr: f.transferencia,
+      g: f.total,
+    }),
+  );
+  ["ef", "ta", "qr", "tr", "g"].forEach(
+    (c) => (ws.getColumn(c).numFmt = MONEDA),
+  );
+  cabecera(ws);
+  ws.autoFilter = { from: "A1", to: "I1" };
+  // Fila de totales
+  const fin = ws.rowCount + 1;
+  ws.getCell(`A${fin}`).value = "TOTAL";
+  ws.getCell(`A${fin}`).font = { bold: true };
+  ["E", "F", "G", "H", "I"].forEach((col) => {
+    const cell = ws.getCell(`${col}${fin}`);
+    cell.value = { formula: `SUM(${col}2:${col}${fin - 1})` };
+    cell.numFmt = MONEDA;
+    cell.font = { bold: true };
+  });
+  // Nota con el rango
+  ws.addRow([]);
+  ws.addRow([`Rango: ${desde} a ${hasta}`]).font = { italic: true };
   return wb;
 }

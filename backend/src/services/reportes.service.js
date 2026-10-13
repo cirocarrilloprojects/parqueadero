@@ -5,7 +5,11 @@ import { diasEntre } from "./mensualidad.rules.js";
 import { reportesRepo as repo } from "../repositories/reportes.repository.js";
 import { dashboardRepo } from "../repositories/dashboard.repository.js";
 import { empresaGestionRepo } from "../repositories/empresa.repository.js";
-import { libroReporte, libroTurnos } from "./reportes.excel.js";
+import {
+  libroReporte,
+  libroTurnos,
+  libroPorUsuario,
+} from "./reportes.excel.js";
 
 const r2 = (n) => Math.round(n * 100) / 100;
 
@@ -43,7 +47,7 @@ export const reportesService = {
     for (const p of pagos) {
       const monto = Number(p.monto);
       p.origen === "parqueo" ? (mov += monto) : (mens += monto);
-      const f = ymdEnZona(c.tz, new Date(p.fecha_pago)); // el día se decide en la zona de la empresa
+      const f = ymdEnZona(c.tz, new Date(p.fecha_pago));
       const d = dias.get(f) ?? {
         fecha: f,
         total: 0,
@@ -131,6 +135,25 @@ export const reportesService = {
     return repo.turnos(u.empresaId, c.ini, c.fin, q.usuario);
   },
 
+  // NUEVO: ingresos por trabajador, agrupados por usuario.
+  async porUsuario(u, q) {
+    const c = await contexto(u, q);
+    const rows = await repo.porUsuario(u.empresaId, c.ini, c.fin);
+    // Normaliza a number y añade el total = suma de los 4 métodos
+    return rows.map((r) => ({
+      id_usuario: r.id_usuario,
+      nombre: r.nombre,
+      usuario_login: r.usuario_login,
+      rol: r.rol,
+      efectivo: r2(Number(r.efectivo ?? 0)),
+      tarjeta: r2(Number(r.tarjeta ?? 0)),
+      qr: r2(Number(r.qr ?? 0)),
+      transferencia: r2(Number(r.transferencia ?? 0)),
+      total: r2(Number(r.total ?? 0)),
+      tickets: Number(r.tickets ?? 0),
+    }));
+  },
+
   async excel(u, q) {
     const c = await contexto(u, q);
     const [resumen, movimientos, mensualidades, empresa] = await Promise.all([
@@ -170,6 +193,17 @@ export const reportesService = {
         turnos: await repo.turnos(u.empresaId, c.ini, c.fin, q.usuario),
       }),
       nombre: `cierres_turno_${c.desde}_${c.hasta}.xlsx`,
+    };
+  },
+  async excelPorUsuario(u, q) {
+    const c = await contexto(u, q);
+    return {
+      libro: libroPorUsuario({
+        desde: c.desde,
+        hasta: c.hasta,
+        filas: await this.porUsuario(u, q),
+      }),
+      nombre: `ingresos_por_trabajador_${c.desde}_${c.hasta}.xlsx`,
     };
   },
 };

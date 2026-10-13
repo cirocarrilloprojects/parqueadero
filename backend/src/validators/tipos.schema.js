@@ -12,6 +12,11 @@ export const tipoSchema = z.object({
     .pipe(
       z.string().regex(/^[a-z0-9_]+$/, "Solo letras, números y guiones bajos"),
     ),
-  capacidad: z.coerce.number().int().min(0).max(100000).default(0),
+  // Capacidad obligatoria y mayor que 0. Sin default: el frontend debe enviarla.
+  capacidad: z.coerce
+    .number()
+    .int()
+    .min(1, "La capacidad debe ser mayor que 0")
+    .max(100000),
   activo: z.boolean().default(true),
 });

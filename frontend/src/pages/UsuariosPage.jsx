@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { useGet, useApiMutation } from "../hooks/useApi";
 import { useFormat } from "../hooks/useEmpresa";
 import { useAuth } from "../context/AuthContext";
+import { useAdminPassword } from "../components/ui/AdminPasswordContext";
 import Card from "../components/ui/Card";
 import DataTable from "../components/ui/DataTable";
 import Badge from "../components/ui/Badge";
@@ -15,10 +16,27 @@ import ConfirmDialog from "../components/ui/ConfirmDialog";
 import { Field, FormError, inputCls } from "../components/ui/Field";
 import { useToast } from "../components/ui/Toast";
 
+// Wrapper: ejecuta; si el backend responde PASSWORD_REQUIRED, pide la
+// contraseña al admin (fuera de cualquier otro modal) y reintenta una vez.
+async function conPassword(pedir, run) {
+  try {
+    return await run();
+  } catch (e) {
+    if (e.code !== "PASSWORD_REQUIRED") throw e;
+    const pwd = await pedir(
+      "Vas a realizar una acción sensible. Confirma tu identidad.",
+    );
+    if (!pwd) throw new Error("CANCELADO");
+    return await run(pwd);
+  }
+}
+
 function UsuarioModal({ usuario, onClose }) {
   const toast = useToast();
+  const { pedir } = useAdminPassword();
   const editando = !!usuario.id_usuario;
   const [error, setError] = useState("");
+
   const { register, handleSubmit } = useForm({
     defaultValues: {
       nombre: usuario.nombre ?? "",
@@ -28,24 +46,33 @@ function UsuarioModal({ usuario, onClose }) {
       activo: usuario.activo === undefined ? true : !!usuario.activo,
     },
   });
+
   const save = useApiMutation(
-    (v) =>
+    ({ body, admin_password }) =>
       editando
-        ? api.put(`/usuarios/${usuario.id_usuario}`, v)
-        : api.post("/usuarios", v),
+        ? api.put(`/usuarios/${usuario.id_usuario}`, {
+            ...body,
+            ...(admin_password ? { admin_password } : {}),
+          })
+        : api.post("/usuarios", body),
     { invalidate: [["usuarios"]], silent: true },
   );
 
   const onSubmit = async (v) => {
     setError("");
     const body = { ...v };
-    if (editando && !body.password) delete body.password; // en edición la contraseña es opcional
+    // En edición, nunca mandamos contraseña por aquí. La contraseña se cambia
+    // SOLO por el modal dedicado "Restablecer contraseña".
+    if (editando) delete body.password;
     try {
-      await save.mutateAsync(body);
+      await conPassword(pedir, (pwd) =>
+        save.mutateAsync({ body, admin_password: pwd }),
+      );
       toast.success(editando ? "Usuario actualizado" : "Usuario creado");
       onClose();
     } catch (e) {
-      setError(e.userMessage);
+      if (e.message === "CANCELADO") return;
+      setError(e.userMessage ?? e.message);
     }
   };
 
@@ -87,23 +114,29 @@ function UsuarioModal({ usuario, onClose }) {
             {...register("usuario_login")}
           />
         </Field>
-        <Field
-          label={
-            editando
-              ? "Contraseña (déjala vacía para no cambiarla)"
-              : "Contraseña"
-          }
-          hint="Mínimo 6 caracteres"
-        >
-          <input
-            type="password"
-            className={inputCls}
-            required={!editando}
-            minLength={6}
-            autoComplete="new-password"
-            {...register("password")}
-          />
-        </Field>
+
+        {/* Campo de contraseña SOLO al crear. En edición se oculta: la
+            contraseña se cambia por el modal dedicado del ícono llave. */}
+        {!editando && (
+          <Field label="Contraseña" hint="Mínimo 6 caracteres">
+            <input
+              type="password"
+              className={inputCls}
+              required
+              minLength={6}
+              autoComplete="new-password"
+              {...register("password")}
+            />
+          </Field>
+        )}
+
+        {editando && (
+          <p className="rounded bg-sky-50 px-3 py-2 text-xs text-sky-800">
+            Para cambiar la contraseña usa el botón{" "}
+            <b>Restablecer contraseña</b> (ícono de llave).
+          </p>
+        )}
+
         <Field label="Rol">
           <select className={inputCls} {...register("rol")}>
             <option value="admin">Administrador</option>
@@ -125,12 +158,15 @@ function UsuarioModal({ usuario, onClose }) {
 
 function PasswordModal({ usuario, onClose }) {
   const toast = useToast();
+  const { pedir } = useAdminPassword();
   const [pwd, setPwd] = useState("");
   const [conf, setConf] = useState("");
   const [ver, setVer] = useState(false);
   const [error, setError] = useState("");
+
   const save = useApiMutation(
-    (password) => api.put(`/usuarios/${usuario.id_usuario}`, { password }),
+    ({ password, admin_password }) =>
+      api.put(`/usuarios/${usuario.id_usuario}`, { password, admin_password }),
     { silent: true },
   );
 
@@ -140,11 +176,14 @@ function PasswordModal({ usuario, onClose }) {
       return setError("La contraseña debe tener al menos 6 caracteres.");
     if (pwd !== conf) return setError("Las contraseñas no coinciden.");
     try {
-      await save.mutateAsync(pwd);
+      await conPassword(pedir, (adminPwd) =>
+        save.mutateAsync({ password: pwd, admin_password: adminPwd }),
+      );
       toast.success("Contraseña actualizada correctamente");
       onClose();
     } catch (err) {
-      setError(err.userMessage);
+      if (err.message === "CANCELADO") return;
+      setError(err.userMessage ?? err.message);
     }
   }
 
@@ -152,7 +191,7 @@ function PasswordModal({ usuario, onClose }) {
     <Modal
       open
       onClose={onClose}
-      title="Cambiar contraseña"
+      title="Restablecer contraseña"
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
@@ -204,6 +243,10 @@ function PasswordModal({ usuario, onClose }) {
             required
           />
         </Field>
+        <p className="text-xs text-slate-500">
+          El usuario tendrá que usar esta nueva contraseña en su próximo
+          ingreso.
+        </p>
       </form>
     </Modal>
   );
@@ -213,17 +256,33 @@ export default function UsuariosPage() {
   const toast = useToast();
   const { user: yo } = useAuth();
   const { fmtDate } = useFormat();
+  const { pedir } = useAdminPassword();
   const { data = [], isLoading } = useGet(["usuarios"], "/usuarios");
   const [editing, setEditing] = useState(null);
   const [pwdFor, setPwdFor] = useState(null);
   const [toDeactivate, setToDeactivate] = useState(null);
-  const deactivate = useApiMutation((id) => api.delete(`/usuarios/${id}`), {
-    invalidate: [["usuarios"]],
-    onSuccess: () => {
+
+  const deactivate = useApiMutation(
+    ({ id, admin_password }) =>
+      api.delete(`/usuarios/${id}`, { data: { admin_password } }),
+    { invalidate: [["usuarios"]], silent: true },
+  );
+
+  async function onConfirmDeactivate() {
+    try {
+      await conPassword(pedir, (adminPwd) =>
+        deactivate.mutateAsync({
+          id: toDeactivate.id_usuario,
+          admin_password: adminPwd,
+        }),
+      );
       toast.success("Usuario desactivado");
       setToDeactivate(null);
-    },
-  });
+    } catch (e) {
+      if (e.message === "CANCELADO") return;
+      toast.error(e.userMessage ?? "No se pudo desactivar");
+    }
+  }
 
   const columns = [
     { key: "nombre", header: "Nombre" },
@@ -266,7 +325,7 @@ export default function UsuariosPage() {
             <Pencil size={14} />
           </button>
           <button
-            title="Cambiar contraseña"
+            title="Restablecer contraseña"
             onClick={() => setPwdFor(u)}
             className="rounded bg-amber-500 p-1.5 text-white hover:bg-amber-600"
           >
@@ -309,8 +368,8 @@ export default function UsuariosPage() {
         title="Desactivar usuario"
         confirmText="Desactivar"
         loading={deactivate.isPending}
-        message={`¿Desactivar a ${toDeactivate?.nombre}?`}
-        onConfirm={() => deactivate.mutate(toDeactivate.id_usuario)}
+        message={`¿Desactivar a ${toDeactivate?.nombre}?\n\nEl usuario quedará inactivo y ya no podrá iniciar sesión. Su historial se conserva.`}
+        onConfirm={onConfirmDeactivate}
         onClose={() => setToDeactivate(null)}
       />
     </>

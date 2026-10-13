@@ -5,7 +5,6 @@ import { likeContiene } from "../utils/like.js";
 function filtrosMov(empresaId, { ini, fin, tipo, estado, placa }) {
   const where = ["m.id_empresa = ?"];
   const params = [empresaId];
-  // Finalizados se ubican por fecha de salida; activos, por fecha de entrada (igual que el original).
   if (estado === "activo")
     where.push(
       "m.estado = 'activo'",
@@ -109,6 +108,42 @@ export const reportesRepo = {
          JOIN vehiculos v ON v.id_vehiculo = m.id_vehiculo
         WHERE mp.id_empresa = ? AND mp.fecha_pago >= ? AND mp.fecha_pago < ? ORDER BY mp.fecha_pago`,
       [empresaId, ini, fin],
+    );
+    return r;
+  },
+
+  // NUEVO: totales por trabajador en el rango. Agrupa pagos de parqueo y
+  // mensualidades por id_usuario, desglosado por método.
+  async porUsuario(empresaId, ini, fin) {
+    const [r] = await pool.query(
+      `SELECT u.id_usuario, u.nombre, u.usuario_login, u.rol,
+              SUM(x.efectivo)      AS efectivo,
+              SUM(x.tarjeta)       AS tarjeta,
+              SUM(x.qr)            AS qr,
+              SUM(x.transferencia) AS transferencia,
+              SUM(x.monto)         AS total,
+              COUNT(DISTINCT x.id_movimiento) AS tickets
+         FROM (
+           SELECT p.id_usuario, p.metodo_pago, p.monto, p.id_movimiento,
+                  CASE WHEN p.metodo_pago = 'efectivo'      THEN p.monto ELSE 0 END AS efectivo,
+                  CASE WHEN p.metodo_pago = 'tarjeta'       THEN p.monto ELSE 0 END AS tarjeta,
+                  CASE WHEN p.metodo_pago = 'QR'            THEN p.monto ELSE 0 END AS qr,
+                  CASE WHEN p.metodo_pago = 'transferencia' THEN p.monto ELSE 0 END AS transferencia
+             FROM pagos p
+            WHERE p.id_empresa = ? AND p.fecha_pago >= ? AND p.fecha_pago < ?
+           UNION ALL
+           SELECT mp.id_usuario, mp.metodo_pago, mp.monto, NULL AS id_movimiento,
+                  CASE WHEN mp.metodo_pago = 'efectivo'      THEN mp.monto ELSE 0 END AS efectivo,
+                  CASE WHEN mp.metodo_pago = 'tarjeta'       THEN mp.monto ELSE 0 END AS tarjeta,
+                  CASE WHEN mp.metodo_pago = 'QR'            THEN mp.monto ELSE 0 END AS qr,
+                  CASE WHEN mp.metodo_pago = 'transferencia' THEN mp.monto ELSE 0 END AS transferencia
+             FROM mensualidades_pagos mp
+            WHERE mp.id_empresa = ? AND mp.fecha_pago >= ? AND mp.fecha_pago < ?
+         ) x
+         JOIN usuarios u ON u.id_usuario = x.id_usuario
+        GROUP BY u.id_usuario, u.nombre, u.usuario_login, u.rol
+        ORDER BY total DESC`,
+      [empresaId, ini, fin, empresaId, ini, fin],
     );
     return r;
   },

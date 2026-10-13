@@ -24,13 +24,13 @@ import Modal from "../components/ui/Modal";
 
 function StatCard({ icon: Icon, color, title, children }) {
   return (
-    <div className="flex items-center gap-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200 transition-transform hover:-translate-y-1">
+    <div className="flex items-center gap-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
       <div
         className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-white ${color}`}
       >
         <Icon size={24} />
       </div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <h3 className="mb-1 text-sm text-slate-500">{title}</h3>
         {children}
       </div>
@@ -117,34 +117,94 @@ export default function DashboardPage() {
     { placeholderData: keepPreviousData },
   );
 
+  // Totales para enriquecer el KPI de ocupación.
+  const dentroTotal = (data?.porTipo ?? []).reduce(
+    (a, t) => a + Number(t.cantidad ?? 0),
+    0,
+  );
+  const capacidadTotal = (data?.porTipo ?? []).reduce(
+    (a, t) => a + Number(t.capacidad ?? 0),
+    0,
+  );
+
   return (
     <>
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="mb-6 space-y-4">
+        {/* Fila 1: tipos de vehículos a lo ancho */}
         <StatCard
           icon={Car}
           color="bg-brand-600"
           title="Vehículos actuales (por tipo)"
         >
-          <div className="flex flex-wrap gap-x-5 gap-y-1">
-            {(data?.porTipo ?? []).map((t) => (
-              <div key={t.id_tipo}>
-                <small className="text-slate-500">{t.nombre}</small>
-                <div className="text-2xl font-bold">{t.cantidad}</div>
-              </div>
-            ))}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {(data?.porTipo ?? []).map((t) => {
+              const cap = Number(t.capacidad ?? 0);
+              const cant = Number(t.cantidad ?? 0);
+              const pct =
+                cap > 0 ? Math.min(100, Math.round((cant / cap) * 100)) : 0;
+              return (
+                <div key={t.id_tipo} className="rounded-lg bg-slate-50 p-2">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <small className="truncate text-slate-600">
+                      {t.nombre}
+                    </small>
+                    <span className="text-xs text-slate-400">
+                      {cap > 0 ? `${pct}%` : "—"}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-xl font-bold leading-none">
+                    {cant}
+                    {cap > 0 && (
+                      <span className="text-sm font-normal text-slate-500">
+                        /{cap}
+                      </span>
+                    )}
+                  </div>
+                  {cap > 0 ? (
+                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className={`h-full rounded-full ${
+                          pct >= 90
+                            ? "bg-red-500"
+                            : pct >= 70
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <small className="mt-1 block text-[10px] text-slate-400">
+                      Sin capacidad
+                    </small>
+                  )}
+                </div>
+              );
+            })}
             {!isLoading && data?.porTipo?.length === 0 && (
               <span className="text-sm text-slate-500">Sin tipos activos</span>
             )}
           </div>
         </StatCard>
-        <StatCard icon={Banknote} color="bg-emerald-600" title="Ingresos hoy">
-          <div className="text-3xl font-semibold">
-            {fmtMoney(data?.ingresosHoy ?? 0)}
-          </div>
-        </StatCard>
-        <StatCard icon={ParkingSquare} color="bg-amber-500" title="Ocupación">
-          <div className="text-3xl font-semibold">{data?.ocupacion ?? 0}%</div>
-        </StatCard>
+
+        {/* Fila 2: ingresos y ocupación, lado a lado */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <StatCard icon={Banknote} color="bg-emerald-600" title="Ingresos hoy">
+            <div className="text-3xl font-semibold">
+              {fmtMoney(data?.ingresosHoy ?? 0)}
+            </div>
+          </StatCard>
+          <StatCard icon={ParkingSquare} color="bg-amber-500" title="Ocupación">
+            <div className="text-3xl font-semibold">
+              {data?.ocupacion ?? 0}%
+            </div>
+            {capacidadTotal > 0 && (
+              <div className="mt-1 text-xs text-slate-500">
+                {dentroTotal} / {capacidadTotal} puestos ocupados
+              </div>
+            )}
+          </StatCard>
+        </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-3">

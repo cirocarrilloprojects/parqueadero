@@ -12,7 +12,11 @@ import { turnosService as s } from "../services/turnos.service.js";
 
 const r = Router();
 r.use(authenticate);
+
 r.get("/actual", async (req, res) => ok(res, await s.actual(req.user)));
+r.get("/estado-horario", async (req, res) =>
+  ok(res, await s.estadoHorario(req.user)),
+);
 r.get("/resumen", async (req, res) => ok(res, await s.resumen(req.user)));
 r.post("/abrir", validate({ body: abrirTurnoSchema }), async (req, res) =>
   ok(res, await s.abrir(req.user, req.valid.body), 201),
@@ -23,4 +27,5 @@ r.post("/cerrar", validate({ body: cerrarTurnoSchema }), async (req, res) =>
 r.get("/detalle/:id", validate({ params: idParamSchema }), async (req, res) =>
   ok(res, await s.detalle(req.user, req.valid.params.id)),
 );
+
 export default r;

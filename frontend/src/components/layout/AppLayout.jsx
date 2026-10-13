@@ -15,6 +15,8 @@ import {
   Menu,
   UserCircle,
   DoorClosed,
+  AlertTriangle,
+  Clock,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { TurnoProvider, useTurno } from "../turnos/TurnoProvider";
@@ -47,9 +49,49 @@ const MENU = [
   { to: "/admin/reportes", icon: BarChart3, label: "Reportes", admin: true },
 ];
 
+// Banner de aviso cuando se acerca o ya pasó la hora de cierre del negocio.
+// Solo aplica a operadores. El admin nunca ve el aviso.
+function BannerHorario({ horario, rol }) {
+  if (!horario || horario.operacion24h) return null;
+  if (rol === "admin") return null;
+
+  const min = horario.minutosParaCierre;
+  if (min === null || min === undefined) return null;
+
+  // Cerrado hace rato: no molestar. Solo mostrar si fue en las últimas
+  // 12 horas (para no aparecer días después con un mensaje viejo).
+  if (min < -720) return null;
+
+  if (min <= 0) {
+    return (
+      <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">
+        <AlertTriangle size={16} />
+        <span>
+          <b>El parqueadero está cerrado.</b> Solo puedes cobrar salidas. Los
+          ingresos de vehículos están bloqueados.
+        </span>
+      </div>
+    );
+  }
+
+  if (min <= 15) {
+    return (
+      <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+        <Clock size={16} />
+        <span>
+          El parqueadero cierra en <b>{min} min</b> ({horario.horarioCierre}).
+          Los ingresos nuevos se bloquearán.
+        </span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function Shell() {
   const { user, logout } = useAuth();
-  const { abierto, abrirModal } = useTurno();
+  const { abierto, abrirModal, horario } = useTurno();
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const items = MENU.filter((m) => !m.admin || user?.rol === "admin");
@@ -123,6 +165,7 @@ function Shell() {
             </span>
           </div>
         </header>
+        <BannerHorario horario={horario} rol={user?.rol} />
         <main className="p-4 sm:p-6">
           <ErrorBoundary key={pathname}>
             <Outlet />

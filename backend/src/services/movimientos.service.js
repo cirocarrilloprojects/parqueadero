@@ -4,29 +4,67 @@ import { AppError } from "../utils/AppError.js";
 import { calcularTotal } from "./pricing.service.js";
 import * as movRepo from "../repositories/movimiento.repository.js";
 import { tipoRepo } from "../repositories/tipoVehiculo.repository.js";
+import { empresaGestionRepo } from "../repositories/empresa.repository.js";
+import { ymdEnZona, localToUtc } from "../utils/tz.js";
 
 const aCentavos = (n) => Math.round(Number(n) * 100);
-
-// Minutos transcurridos entre dos instantes UTC (floor, igual que tu TIMESTAMPDIFF original)
 const minutosEntre = (desde, hasta) => Math.floor((hasta - desde) / 60000);
 
-// Datos de la tarifa que necesita el ticket
 const tarifaParaTicket = (m) => ({
   valor_minuto: m.valor_minuto,
   valor_hora: m.valor_hora,
   valor_dia_completo: m.valor_dia_completo,
 });
 
+// ---------------------------------------------------------------
+// Verifica si el negocio está cerrado AHORA para la empresa.
+// Devuelve { bloqueado, minutosParaCierre, cierraA }.
+// Solo se usa para bloquear el INGRESO de nuevos vehículos.
+// Las salidas siempre se permiten.
+// ---------------------------------------------------------------
+async function negocioCerradoAhora(empresaId) {
+  const cfg = await empresaGestionRepo.config(empresaId);
+  if (!cfg || cfg.operacion_24h) return { bloqueado: false };
+
+  const tz = cfg.zona_horaria ?? "America/Bogota";
+  const hhmm = String(cfg.horario_cierre ?? "22:00:00").slice(0, 5);
+  const hoy = ymdEnZona(tz);
+  const ahora = new Date();
+
+  const cierreHoy = localToUtc(tz, `${hoy} ${hhmm}:00`);
+
+  // Si el cierre de hoy aún no ha llegado (más de 1 min de margen),
+  // no está bloqueado. Si ya pasó, está bloqueado.
+  // El caso "estoy entre el cierre de ayer y el de hoy" no bloquea
+  // porque el cierre de hoy todavía no ha ocurrido.
+  const bloqueado = ahora.getTime() >= cierreHoy.getTime();
+  const minutosParaCierre = Math.round(
+    (cierreHoy.getTime() - ahora.getTime()) / 60000,
+  );
+
+  return { bloqueado, minutosParaCierre, cierraA: cierreHoy.toISOString() };
+}
+
 /** INGRESO: todo en una transacción para que vehículo + movimiento sean atómicos. */
 export async function registrarIngreso({
   empresaId,
   usuarioId,
+  rol,
   placa,
   tipoId,
 }) {
-  console.log("[DEBUG] typeof tipoRepo:", typeof tipoRepo);
-  console.log("[DEBUG] tipoRepo keys:", Object.keys(tipoRepo));
-  console.log("[DEBUG] typeof findActivo:", typeof tipoRepo.findActivo);
+  // Bloqueo por horario: solo operadores, y solo si el negocio ya cerró.
+  // El admin nunca se bloquea (revisa reportes a cualquier hora).
+  if (rol !== "admin") {
+    const { bloqueado } = await negocioCerradoAhora(empresaId);
+    if (bloqueado) {
+      throw AppError.conflict(
+        "El parqueadero está cerrado. No se pueden registrar nuevos ingresos.",
+        "AFTER_HOURS",
+      );
+    }
+  }
+
   return withTransaction(async (conn) => {
     const tipo = await tipoRepo.findActivo(empresaId, tipoId, conn);
     if (!tipo)
@@ -39,13 +77,11 @@ export async function registrarIngreso({
         "NO_TARIFA",
       );
 
-    // Busca el vehículo o lo crea
     let vehiculo = await movRepo.findVehiculoByPlaca(empresaId, placa, conn);
     let vehiculoId = vehiculo?.id_vehiculo;
     if (!vehiculo) {
       vehiculoId = await movRepo.insertVehiculo(empresaId, placa, tipoId, conn);
     } else if (vehiculo.id_tipo !== tipoId) {
-      // El original cobraba con el tipo pedido pero dejaba el tipo viejo guardado. Ahora se sincronizan.
       await movRepo.updateTipoVehiculo(vehiculoId, tipoId, conn);
     }
 
@@ -64,8 +100,6 @@ export async function registrarIngreso({
         tarifa: tarifaParaTicket(tarifa),
       };
     } catch (err) {
-      // Si dos cajeros ingresan la misma placa a la vez, el índice único uq_mov_vehiculo_activo
-      // rechaza al segundo (arregla la carrera D1) y lo traducimos a un error de negocio claro.
       if (err.code === "ER_DUP_ENTRY")
         throw AppError.conflict("El vehículo ya está dentro", "ALREADY_INSIDE");
       throw err;
@@ -103,10 +137,7 @@ export async function calcularSalida({ empresaId, placa }) {
 
 /**
  * CONFIRMACIÓN: finaliza el movimiento y registra pagos.
- * Reglas (corrigen D4/D5/D7):
- *  - Debe existir un turno abierto del usuario (ahora lo exige el BACKEND).
- *  - Se recalcula el total en el servidor: nunca se confía en un total enviado por el cliente.
- *  - Lo recibido debe cubrir el total. El vuelto (recibido - total) se descuenta del EFECTIVO (A4).
+ * NO se bloquea por horario: las salidas siempre se permiten.
  */
 export async function confirmarSalida({ empresaId, usuarioId, placa, pagos }) {
   return withTransaction(async (conn) => {
@@ -129,7 +160,6 @@ export async function confirmarSalida({ empresaId, usuarioId, placa, pagos }) {
     const ahora = await movRepo.ahoraUtc(conn);
     const detalle = calcularTotal(minutosEntre(mov.fecha_entrada, ahora), mov);
 
-    // --- Aritmética en centavos ---
     const totalC = aCentavos(detalle.total);
     const recibidoC = pagos.reduce((s, p) => s + aCentavos(p.monto), 0);
     if (recibidoC < totalC) {
@@ -149,7 +179,6 @@ export async function confirmarSalida({ empresaId, usuarioId, placa, pagos }) {
       );
     }
 
-    // Reparte el vuelto: se resta de las filas de efectivo (monto aplicado = recibido - vuelto)
     let vueltoPendiente = vueltoC;
     const filas = [];
     for (const p of pagos) {
@@ -161,7 +190,6 @@ export async function confirmarSalida({ empresaId, usuarioId, placa, pagos }) {
         vueltoPendiente -= descuento;
       }
       if (aplicado > 0) {
-        // CHECK monto > 0: una fila 100% vuelto no se inserta
         filas.push([
           empresaId,
           mov.id_movimiento,

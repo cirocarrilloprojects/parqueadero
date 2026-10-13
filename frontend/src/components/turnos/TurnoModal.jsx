@@ -14,6 +14,7 @@ import { useToast } from "../ui/Toast";
 import CierreTicket from "./CierreTicket";
 
 const num = (v) => Number(v || 0);
+const PRINT_KEY = "ps_print_cierre";
 
 function Apertura({ onClose }) {
   const qc = useQueryClient();
@@ -100,22 +101,43 @@ function Cierre({ onClose }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [cerrado, setCerrado] = useState(null);
+
+  const [imprimirAlCerrar, setImprimirAlCerrar] = useState(() => {
+    const guardado = localStorage.getItem(PRINT_KEY);
+    return guardado === null ? true : guardado === "1";
+  });
+
+  useEffect(() => {
+    localStorage.setItem(PRINT_KEY, imprimirAlCerrar ? "1" : "0");
+  }, [imprimirAlCerrar]);
+
   const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
 
-  // Pre-carga los totales esperados por método de pago cuando el resumen llega.
+  // Ventas del turno + base inicial para calcular el "esperado" real del cajón.
+  const ventas = res?.totales;
+  const base = Number(res?.turno?.base_inicial ?? 0);
+  const esperado = ventas
+    ? {
+        ...ventas,
+        efectivo: (ventas.efectivo ?? 0) + base,
+        total: (ventas.total ?? 0) + base,
+      }
+    : null;
+
+  // Pre-carga los totales esperados por método de pago (ya incluyen la base).
   // No sobreescribe lo que el cajero ya haya escrito.
   useEffect(() => {
-    if (!res?.totales) return;
+    if (!esperado) return;
     setV((prev) => ({
       ...prev,
-      ef: prev.ef === "" ? String(res.totales.efectivo) : prev.ef,
-      ta: prev.ta === "" ? String(res.totales.tarjeta) : prev.ta,
-      qr: prev.qr === "" ? String(res.totales.qr) : prev.qr,
+      ef: prev.ef === "" ? String(esperado.efectivo) : prev.ef,
+      ta: prev.ta === "" ? String(esperado.tarjeta) : prev.ta,
+      qr: prev.qr === "" ? String(esperado.qr) : prev.qr,
     }));
-  }, [res?.totales]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [res?.totales, base]);
 
   const total = num(v.ef) + num(v.ta) + num(v.qr);
-  const esperado = res?.totales;
   const diff = esperado ? Math.round((total - esperado.total) * 100) / 100 : 0;
 
   const imprimir = (data, widthMm) =>
@@ -144,8 +166,13 @@ function Cierre({ onClose }) {
       });
       await qc.invalidateQueries({ queryKey: ["turno"] });
       setCerrado(data.data);
-      // Imprime automáticamente al cerrar (80 mm por defecto).
-      imprimir(data.data, 80);
+      if (imprimirAlCerrar) {
+        try {
+          imprimir(data.data, 80);
+        } catch {
+          /* bloqueado por el navegador; se puede reimprimir desde el modal */
+        }
+      }
     } catch (err) {
       setError(err.userMessage);
     } finally {
@@ -192,11 +219,13 @@ function Cierre({ onClose }) {
               : `Sobra dinero en caja: ${fmtMoney(dif)}.`}
         </p>
         <dl className="grid grid-cols-2 gap-2 text-sm">
+          <dt className="text-slate-500">Base inicial</dt>
+          <dd className="text-right font-medium">{fmtMoney(cerrado.base)}</dd>
           <dt className="text-slate-500">Conteo</dt>
           <dd className="text-right font-medium">
             {fmtMoney(cerrado.conteo.total)}
           </dd>
-          <dt className="text-slate-500">Sistema</dt>
+          <dt className="text-slate-500">Sistema (incluye base)</dt>
           <dd className="text-right font-medium">
             {fmtMoney(cerrado.esperado.total)}
           </dd>
@@ -218,13 +247,20 @@ function Cierre({ onClose }) {
             Cancelar
           </Button>
           <Button variant="success" type="submit" form="cierre" loading={busy}>
-            Cerrar e imprimir
+            Cerrar
           </Button>
         </>
       }
     >
       <form id="cierre" onSubmit={submit} className="space-y-3">
         <FormError message={error} />
+
+        {base > 0 && (
+          <p className="rounded bg-sky-50 px-2 py-1 text-xs text-sky-800">
+            Base inicial del turno: <b>{fmtMoney(base)}</b>. El campo "Efectivo"
+            ya viene con la base sumada.
+          </p>
+        )}
 
         {esperado?.transferencia > 0 && (
           <p className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
@@ -276,7 +312,7 @@ function Cierre({ onClose }) {
 
         <div className="flex flex-wrap justify-between gap-2 text-sm">
           <span>
-            Sistema (esperado):{" "}
+            Sistema (base + ventas):{" "}
             <strong>{esperado ? fmtMoney(esperado.total) : "…"}</strong>
           </span>
           <span>
@@ -301,9 +337,20 @@ function Cierre({ onClose }) {
         </div>
 
         <p className="text-xs text-slate-500">
-          La diferencia es <b>conteo menos sistema</b>. Negativa significa que
-          falta dinero en caja; positiva, que sobra.
+          La diferencia es <b>conteo menos sistema</b>. El sistema incluye la
+          base inicial más las ventas del turno.
         </p>
+
+        <label className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-brand-600"
+            checked={imprimirAlCerrar}
+            onChange={(e) => setImprimirAlCerrar(e.target.checked)}
+          />
+          <Printer size={14} className="text-slate-500" />
+          Imprimir comprobante al cerrar (80 mm)
+        </label>
 
         <Field label="Observación de cierre">
           <input

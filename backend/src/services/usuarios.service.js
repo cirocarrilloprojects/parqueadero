@@ -26,7 +26,7 @@ export const usuariosService = {
     return { id };
   },
 
-  async actualizar(u, id, { password, ...d }) {
+  async actualizar(u, id, { password, admin_password: _ignore, ...d }) {
     const t = await exigir(u, id);
     const seraAdminActivo =
       (d.rol ?? t.rol) === "admin" && (d.activo ?? !!t.activo);
@@ -53,8 +53,6 @@ export const usuariosService = {
     if (password) campos.password_hash = await bcrypt.hash(password, COST);
     await mapDb(() => repo.actualizar(u.empresaId, id, campos), { dup: DUP });
 
-    // Rol, activo o password cambiaron: la próxima petición con el token viejo
-    // debe revalidar contra la BD, no leer el rol anterior de la caché.
     invalidarSesion(id);
   },
 

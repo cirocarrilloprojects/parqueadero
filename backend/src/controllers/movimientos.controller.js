@@ -1,12 +1,12 @@
 // backend/src/controllers/movimientos.controller.js
 import * as service from "../services/movimientos.service.js";
 
-// Cada handler es async y SIN try/catch: Express 5 envía el error rechazado al errorHandler.
 export async function ingreso(req, res) {
   const { placa, id_tipo } = req.valid.body;
   const data = await service.registrarIngreso({
     empresaId: req.user.empresaId,
     usuarioId: req.user.id,
+    rol: req.user.rol, // ← nuevo
     placa,
     tipoId: id_tipo,
   });

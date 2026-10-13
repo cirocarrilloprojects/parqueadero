@@ -35,10 +35,16 @@ r.get("/top-placas", q, async (req, res) =>
 r.get("/turnos", q, async (req, res) =>
   ok(res, await s.turnos(req.user, req.valid.query)),
 );
+r.get("/por-usuario", q, async (req, res) =>
+  ok(res, await s.porUsuario(req.user, req.valid.query)),
+);
 r.get("/export/xlsx", q, async (req, res) =>
   enviarLibro(res, await s.excel(req.user, req.valid.query)),
 );
 r.get("/turnos/export/xlsx", q, async (req, res) =>
   enviarLibro(res, await s.excelTurnos(req.user, req.valid.query)),
+);
+r.get("/por-usuario/export/xlsx", q, async (req, res) =>
+  enviarLibro(res, await s.excelPorUsuario(req.user, req.valid.query)),
 );
 export default r;

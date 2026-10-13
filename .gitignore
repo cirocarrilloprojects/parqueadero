@@ -101,3 +101,5 @@ temp/
 *.key
 *.p12
 *.pfx
+
+reporte.txt

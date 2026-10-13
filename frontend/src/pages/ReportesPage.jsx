@@ -25,6 +25,7 @@ import {
   FileSpreadsheet,
   CalendarDays,
   Printer,
+  Users,
 } from "lucide-react";
 import api from "../api/client";
 import { useGet } from "../hooks/useApi";
@@ -254,6 +255,198 @@ function CierresModal({ onClose, hoy }) {
   );
 }
 
+function PorUsuarioModal({ onClose, hoy }) {
+  const fmt = useFormat();
+  const toast = useToast();
+  const [f, setF] = useState({ desde: hoy, hasta: hoy });
+  const [aplicado, setAplicado] = useState(f);
+  const { data = [], isLoading } = useGet(
+    ["reportes", "por-usuario", aplicado],
+    `/reportes/por-usuario?${qs(aplicado)}`,
+  );
+
+  const totales = useMemo(() => {
+    return data.reduce(
+      (a, r) => ({
+        tickets: a.tickets + r.tickets,
+        efectivo: a.efectivo + r.efectivo,
+        tarjeta: a.tarjeta + r.tarjeta,
+        qr: a.qr + r.qr,
+        transferencia: a.transferencia + r.transferencia,
+        total: a.total + r.total,
+      }),
+      {
+        tickets: 0,
+        efectivo: 0,
+        tarjeta: 0,
+        qr: 0,
+        transferencia: 0,
+        total: 0,
+      },
+    );
+  }, [data]);
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="xl"
+      title="Ingresos por trabajador"
+      footer={
+        <Button variant="outline" onClick={onClose}>
+          Cerrar
+        </Button>
+      }
+    >
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input
+          type="date"
+          className={`${inputCls} w-40!`}
+          value={f.desde}
+          onChange={(e) => setF({ ...f, desde: e.target.value })}
+        />
+        <input
+          type="date"
+          className={`${inputCls} w-40!`}
+          value={f.hasta}
+          onChange={(e) => setF({ ...f, hasta: e.target.value })}
+        />
+        <Button onClick={() => setAplicado(f)}>
+          <Filter size={14} className="mr-1" />
+          Filtrar
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => setAplicado({ desde: hoy, hasta: hoy })}
+        >
+          <CalendarDays size={14} className="mr-1" />
+          Hoy
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() =>
+            setAplicado({ desde: addDaysYmd(hoy, -6), hasta: hoy })
+          }
+        >
+          Últimos 7
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() =>
+            setAplicado({ desde: mesYmd(hoy)[0], hasta: mesYmd(hoy)[1] })
+          }
+        >
+          Este mes
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() =>
+            descargar(
+              `/reportes/por-usuario/export/xlsx?${qs(aplicado)}`,
+              `ingresos_por_trabajador_${aplicado.desde}_${aplicado.hasta}.xlsx`,
+            ).catch(() => toast.error("No se pudo exportar"))
+          }
+        >
+          <FileSpreadsheet size={14} className="mr-1" />
+          Excel
+        </Button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b text-slate-600">
+              {[
+                "Trabajador",
+                "Rol",
+                "Tickets",
+                "Efectivo",
+                "Tarjeta",
+                "QR",
+                "Transferencia",
+                "Total",
+              ].map((h) => (
+                <th key={h} className="px-2 py-2 font-semibold">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr>
+                <td colSpan={8} className="py-6 text-center text-slate-500">
+                  Cargando…
+                </td>
+              </tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="py-6 text-center text-slate-500">
+                  Sin ingresos en el rango
+                </td>
+              </tr>
+            ) : (
+              data.map((r) => (
+                <tr key={r.id_usuario} className="border-b border-slate-100">
+                  <td className="px-2 py-2">
+                    <div className="font-medium">{r.nombre}</div>
+                    <div className="text-xs text-slate-500">
+                      {r.usuario_login}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
+                    <Badge tone={r.rol === "admin" ? "blue" : "gray"}>
+                      {r.rol.toUpperCase()}
+                    </Badge>
+                  </td>
+                  <td className="px-2 py-2 text-right">{r.tickets}</td>
+                  <td className="px-2 py-2 text-right">
+                    {fmt.fmtMoney(r.efectivo)}
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    {fmt.fmtMoney(r.tarjeta)}
+                  </td>
+                  <td className="px-2 py-2 text-right">{fmt.fmtMoney(r.qr)}</td>
+                  <td className="px-2 py-2 text-right">
+                    {fmt.fmtMoney(r.transferencia)}
+                  </td>
+                  <td className="px-2 py-2 text-right font-bold">
+                    {fmt.fmtMoney(r.total)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          {data.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-slate-300 font-bold">
+                <td className="px-2 py-2" colSpan={2}>
+                  TOTAL
+                </td>
+                <td className="px-2 py-2 text-right">{totales.tickets}</td>
+                <td className="px-2 py-2 text-right">
+                  {fmt.fmtMoney(totales.efectivo)}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {fmt.fmtMoney(totales.tarjeta)}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {fmt.fmtMoney(totales.qr)}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {fmt.fmtMoney(totales.transferencia)}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {fmt.fmtMoney(totales.total)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
 export default function ReportesPage() {
   const fmt = useFormat();
   const toast = useToast();
@@ -274,6 +467,7 @@ export default function ReportesPage() {
   const [metodo, setMetodo] = useState("");
   const [page, setPage] = useState(0);
   const [cierres, setCierres] = useState(false);
+  const [porUsuario, setPorUsuario] = useState(false);
   const [busy, setBusy] = useState("");
 
   const rango = qs({ desde: aplicado.desde, hasta: aplicado.hasta });
@@ -354,10 +548,16 @@ export default function ReportesPage() {
       <Card
         title="Filtros de reporte"
         actions={
-          <Button variant="outline" onClick={() => setCierres(true)}>
-            <Banknote size={14} className="mr-1" />
-            Cierres de turno
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setPorUsuario(true)}>
+              <Users size={14} className="mr-1" />
+              Ingresos por trabajador
+            </Button>
+            <Button variant="outline" onClick={() => setCierres(true)}>
+              <Banknote size={14} className="mr-1" />
+              Cierres de turno
+            </Button>
+          </>
         }
       >
         <div className="flex flex-wrap items-end gap-2">
@@ -686,6 +886,9 @@ export default function ReportesPage() {
         </table>
       </Card>
       {cierres && <CierresModal hoy={hoy} onClose={() => setCierres(false)} />}
+      {porUsuario && (
+        <PorUsuarioModal hoy={hoy} onClose={() => setPorUsuario(false)} />
+      )}
     </div>
   );
 }
